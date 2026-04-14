@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Platform Photo Pipeline</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            min-height: 100vh;
+            padding: 16px;
+        }
+        .container { max-width: 1500px; margin: 0 auto; }
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 20px;
+        }
+        header h1 { font-size: 2rem; margin-bottom: 6px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
+        header p { opacity: 0.9; font-size: 14px; }
+        
+        .status-bar {
+            background: rgba(255,255,255,0.95);
+            border-radius: 14px;
+            padding: 14px 18px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.1);
+        }
+        .status-indicator { display: flex; align-items: center; gap: 8px; }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%; background: #ccc;
+        }
+        .status-dot.watching { background: #00d26a; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        
+        .btn {
+            padding: 8px 16px; border: none; border-radius: 18px;
+            font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #ff2442, #ff6b6b); color: white;
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(255,36,66,0.35); }
+        .btn-secondary { background: #f0f0f0; color: #333; }
+        .btn-small { padding: 5px 12px; font-size: 12px; border-radius: 14px; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 460px;
+            gap: 16px;
+        }
+        @media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
+        
+        .left-panel { display: flex; flex-direction: column; gap: 16px; }
+        .card {
+            background: rgba(255,255,255,0.97);
+            border-radius: 14px;
+            padding: 16px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.08);
+        }
+        .section-title {
+            font-size: 1.05rem; font-weight: 700; margin-bottom: 12px;
+            color: #333; display: flex; align-items: center; gap: 6px;
+        }
+        
+        /* Config */
+        .config-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px;
+        }
+        .config-field label { display: block; font-size: 11px; font-weight: 500; color: #666; margin-bottom: 3px; }
+        .config-field select, .config-field input {
+            width: 100%; padding: 7px 10px; border: 1px solid #e0e0e0;
+            border-radius: 8px; font-size: 12px;
+        }
+        .platform-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+        .platform-chip {
+            padding: 5px 12px; border-radius: 14px; font-size: 12px;
+            cursor: pointer; border: 1px solid #e0e0e0; background: white; transition: all 0.15s;
+        }
+        .platform-chip.active { background: #667eea; color: white; border-color: #667eea; }
+        
+        /* Photos */
+        .photo-toolbar {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+        }
+        .photo-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;
+        }
+        .photo-card {
+            position: relative; border-radius: 10px; overflow: hidden;
+            aspect-ratio: 1; cursor: pointer; transition: all 0.2s;
+            background: #f5f5f5; border: 2px solid transparent;
+        }
+        .photo-card:hover { transform: scale(1.02); }
+        .photo-card.active { border-color: #ff2442; }
+        .photo-card img { width: 100%; height: 100%; object-fit: cover; }
+        .photo-overlay {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            padding: 6px; background: linear-gradient(transparent, rgba(0,0,0,0.65));
+            color: white; font-size: 10px;
+        }
+        .photo-status {
+            position: absolute; top: 5px; right: 5px;
+            padding: 2px 6px; border-radius: 8px; font-size: 9px; font-weight: 500;
+        }
+        .photo-status.pending { background: #ffd93d; color: #333; }
+        .photo-status.analyzing { background: #6c5ce7; color: white; }
+        .photo-status.ready { background: #00d26a; color: white; }
+        .photo-status.published { background: #3498db; color: white; }
+        .photo-checkbox {
+            position: absolute; top: 5px; left: 5px;
+            width: 18px; height: 18px; cursor: pointer; z-index: 2;
+        }
+        
+        /* Platform tabs */
+        .platform-tabs {
+            display: flex; gap: 6px; margin-bottom: 12px;
+            border-bottom: 1px solid #eee; padding-bottom: 8px;
+        }
+        .platform-tab {
+            padding: 6px 14px; border-radius: 16px; font-size: 12px;
+            cursor: pointer; background: #f5f5f5; border: none;
+        }
+        .platform-tab.active { background: #333; color: white; }
+        
+        /* Editor */
+        .editor-field { margin-bottom: 10px; }
+        .editor-field label { display: block; font-size: 11px; font-weight: 500; color: #666; margin-bottom: 3px; }
+        .editor-field input, .editor-field textarea {
+            width: 100%; padding: 8px; border: 1px solid #e0e0e0;
+            border-radius: 8px; font-size: 12px; font-family: inherit;
+        }
+        .editor-field textarea { min-height: 80px; }
+        .action-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+        
+        /* Schedule panel */
+        .schedule-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px;
+            max-height: 200px; overflow-y: auto;
+        }
+        .schedule-slot {
+            padding: 10px; border: 1px solid #e0e0e0; border-radius: 10px;
+            cursor: pointer; text-align: center; transition: all 0.15s;
+        }
+        .schedule-slot:hover { border-color: #667eea; }
+        .schedule-slot.selected { background: #667eea; color: white; border-color: #667eea; }
+        .schedule-slot .day { font-size: 11px; opacity: 0.8; }
+        .schedule-slot .time { font-size: 13px; font-weight: 600; margin-top: 2px; }
+        .schedule-slot .score { font-size: 10px; margin-top: 2px; }
+        
+        /* Phone Previews */
+        .phone-container { position: sticky; top: 16px; }
+        .phone-frame {
+            background: #1a1a1a; border-radius: 36px; padding: 10px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.25);
+        }
+        .phone-screen {
+            background: white; border-radius: 28px; overflow: hidden;
+            aspect-ratio: 9/19; display: flex; flex-direction: column;
+        }
+        .phone-notch {
+            height: 24px; background: #1a1a1a;
+            border-radius: 0 0 16px 16px; margin: 0 auto; width: 100px;
+        }
+        .preview-scroll { flex: 1; overflow-y: auto; background: #f5f5f5; }
+        
+        /* Xiaohongshu */
+        .xhs-header {
+            display: flex; align-items: center; padding: 10px 14px;
+            background: white; gap: 8px;
+        }
+        .xhs-avatar { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #ff6b9d, #feca57); }
+        .xhs-user-info { flex: 1; }
+        .xhs-username { font-size: 13px; font-weight: 500; }
+        .xhs-followers { font-size: 10px; color: #999; }
+        .xhs-follow-btn { background: #ff2442; color: white; border: none; padding: 5px 14px; border-radius: 14px; font-size: 11px; }
+        .xhs-image-container { position: relative; background: #000; }
+        .xhs-image { width: 100%; aspect-ratio: 3/4; object-fit: cover; }
+        .xhs-image-indicator { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.5); color: white; padding: 3px 6px; border-radius: 10px; font-size: 10px; }
+        .xhs-content { padding: 14px; background: white; margin-bottom: 6px; }
+        .xhs-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; line-height: 1.45; }
+        .xhs-body { font-size: 13px; line-height: 1.75; color: #333; white-space: pre-wrap; }
+        .xhs-hashtags { color: #576b95; margin-top: 10px; font-size: 13px; }
+        .xhs-meta { display: flex; justify-content: space-between; padding: 10px 14px; background: white; font-size: 11px; color: #999; border-top: 1px solid #f0f0f0; }
+        .xhs-actions { display: flex; justify-content: space-around; padding: 10px; background: white; border-top: 1px solid #f0f0f0; }
+        .xhs-action { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #666; }
+        .xhs-music-bar { display: flex; align-items: center; padding: 8px 14px; background: white; gap: 6px; font-size: 11px; color: #666; }
+        .xhs-music-icon { width: 14px; height: 14px; animation: rotate 3s linear infinite; }
+        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        
+        /* Instagram */
+        .ig-header { display: flex; align-items: center; padding: 10px 14px; background: white; gap: 8px; border-bottom: 1px solid #f0f0f0; }
+        .ig-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, #f093fb, #f5576c); }
+        .ig-username { font-size: 13px; font-weight: 600; flex: 1; }
+        .ig-image { width: 100%; aspect-ratio: 1; object-fit: cover; }
+        .ig-actions { display: flex; padding: 10px 14px; background: white; gap: 14px; }
+        .ig-action svg { width: 22px; height: 22px; }
+        .ig-likes { padding: 0 14px 6px; background: white; font-size: 13px; font-weight: 600; }
+        .ig-caption { padding: 0 14px 10px; background: white; font-size: 13px; line-height: 1.6; }
+        .ig-caption .username { font-weight: 600; }
+        .ig-comments { padding: 0 14px 10px; background: white; font-size: 12px; color: #999; }
+        .ig-time { padding: 0 14px 10px; background: white; font-size: 10px; color: #999; text-transform: uppercase; }
+        
+        /* LinkedIn */
+        .li-header { display: flex; align-items: center; padding: 12px 14px; background: white; gap: 10px; border-bottom: 1px solid #f0f0f0; }
+        .li-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #0077b5, #00a0dc); }
+        .li-name { font-size: 13px; font-weight: 600; }
+        .li-headline { font-size: 11px; color: #666; }
+        .li-time { font-size: 10px; color: #999; }
+        .li-follow { color: #0077b5; font-size: 13px; font-weight: 600; margin-left: auto; }
+        .li-body { padding: 14px; background: white; font-size: 13px; line-height: 1.7; }
+        .li-image { width: 100%; }
+        .li-stats { display: flex; justify-content: space-between; padding: 8px 14px; background: white; font-size: 11px; color: #666; border-top: 1px solid #f0f0f0; border-bottom: 1px solid #f0f0f0; }
+        .li-actions { display: flex; justify-content: space-around; padding: 8px 14px; background: white; font-size: 12px; color: #666; }
+        .li-action { display: flex; align-items: center; gap: 4px; font-weight: 600; }
+        
+        .empty-state { text-align: center; padding: 40px 16px; color: #999; }
+        .loading { display: inline-block; width: 18px; height: 18px; border: 2px solid #f0f0f0; border-top-color: #ff2442; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast {
+            position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+            background: #333; color: white; padding: 10px 20px;
+            border-radius: 20px; font-size: 12px; z-index: 1000; animation: fadeInUp 0.25s;
+        }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateX(-50%) translateY(16px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="container">
+            <header>
+                <h1>Multi-Platform Photo Pipeline</h1>
+                <p>小红书 + Instagram + LinkedIn — AI 自动生成，一键排版预览</p>
+            </header>
+            
+            <!-- Status -->
+            <div class="status-bar">
+                <div class="status-indicator">
+                    <div class="status-dot" :class="{ watching: isWatching }"></div>
+                    <span>{{ isWatching ? '监控中' : '已停止' }}</span>
+                    <span v-if="lastCheck" style="color: #999; font-size: 11px;">上次: {{ formatTime(lastCheck) }}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span style="color: #666; font-size: 12px;">
+                        待处理 {{ queueSize }} | 已生成 {{ processedCount }} | 已排期 {{ scheduledCount }}
+                    </span>
+                    <button class="btn" :class="isWatching ? 'btn-secondary' : 'btn-primary'" @click="toggleWatching">
+                        {{ isWatching ? '停止' : '开始监控' }}
+                    </button>
+                </div>
+            </div>
+            
+            <div class="main-grid">
+                <!-- LEFT PANEL -->
+                <div class="left-panel">
+                    <!-- Config -->
+                    <div class="card">
+                        <h2 class="section-title">⚙️ 配置</h2>
+                        <div class="config-grid">
+                            <div class="config-field">
+                                <label>AI 提供商</label>
+                                <select v-model="config.provider" @change="updateConfig">
+                                    <option value="anthropic">Anthropic Claude</option>
+                                    <option value="openai">OpenAI GPT-4o</option>
+                                    <option value="gemini">Google Gemini</option>
+                                </select>
+                            </div>
+                            <div class="config-field">
+                                <label>默认风格</label>
+                                <select v-model="config.default_tone" @change="updateConfig">
+                                    <option value="warm_friend">温暖闺蜜</option>
+                                    <option value="trendy_sister">潮流辣妹</option>
+                                    <option value="lifestyle_blogger">生活博主</option>
+                                    <option value="luxury_minimal">高级简约</option>
+                                </select>
+                            </div>
+                            <div class="config-field">
+                                <label>API Key</label>
+                                <input type="password" v-model="config.api_key_input" placeholder="输入 API Key" @blur="saveApiKey">
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <span style="font-size: 12px; color: #666;">默认平台:</span>
+                            <div class="platform-chips">
+                                <div 
+                                    v-for="(info, key) in availablePlatforms"
+                                    :key="key"
+                                    class="platform-chip"
+                                    :class="{ active: config.default_platforms.includes(key) }"
+                                    @click="toggleDefaultPlatform(key)"
+                                >
+                                    {{ info.icon }} {{ info.name }}
+                                </div>
+                            </div>
+                            <button class="btn btn-small btn-secondary" @click="runTakeoutSync" :disabled="isSyncing">
+                                {{ isSyncing ? '同步中...' : '📦 Takeout 同步' }}
+                            </button>
+                        </div>
+                        <div v-if="config.has_api_key" style="margin-top: 8px; font-size: 11px; color: #00d26a;">✓ API Key 已配置</div>
+                    </div>
+                    
+                    <!-- Photos -->
+                    <div class="card">
+                        <div class="photo-toolbar">
+                            <h2 class="section-title" style="margin: 0;">🖼️ 照片队列</h2>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-small btn-secondary" @click="selectAllPending">
+                                    {{ allPendingSelected ? '取消全选' : '全选待处理' }}
+                                </button>
+                                <button 
+                                    class="btn btn-small btn-primary" 
+                                    @click="batchGenerate"
+                                    :disabled="selectedPhotoIds.length === 0 || isBatching"
+                                >
+                                    {{ isBatching ? '批量生成中...' : `批量生成 (${selectedPhotoIds.length})` }}
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div v-if="photos.length === 0" class="empty-state">
+                            <p>暂无照片<br>将照片移动到 Drive 的 selected 文件夹</p>
+                        </div>
+                        
+                        <div class="photo-grid" v-else>
+                            <div 
+                                v-for="photo in photos"
+                                :key="photo.id"
+                                class="photo-card"
+                                :class="{ active: selectedPhoto && selectedPhoto.id === photo.id }"
+                                @click="selectPhoto(photo)"
+                            >
+                                <input 
+                                    type="checkbox" 
+                                    class="photo-checkbox"
+                                    v-model="selectedPhotoIds"
+                                    :value="photo.id"
+                                    @click.stop
+                                    v-if="photo.status === 'pending'"
+                                >
+                                <img :src="photo.image_base64.startsWith('data:') ? photo.image_base64 : 'data:image/jpeg;base64,' + photo.image_base64">
+                                <div class="photo-overlay">{{ photo.file_name }}</div>
+                                <div class="photo-status" :class="photo.status">
+                                    {{ statusText(photo.status) }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Generate / Editor -->
+                    <div class="card" v-if="selectedPhoto">
+                        <!-- Platform tabs for generation -->
+                        <div class="platform-tabs" v-if="selectedPhoto.status === 'pending' || selectedPhoto.status === 'analyzing'">
+                            <div 
+                                v-for="(info, key) in availablePlatforms"
+                                :key="key"
+                                class="platform-tab"
+                                :class="{ active: selectedPlatforms.includes(key) }"
+                                @click="togglePlatform(key)"
+                            >
+                                {{ info.icon }} {{ info.name }}
+                            </div>
+                        </div>
+                        
+                        <div v-if="selectedPhoto.status === 'pending'">
+                            <p style="font-size: 12px; color: #666; margin-bottom: 10px;">选择平台与风格后生成：</p>
+                            <div class="platform-chips" style="margin-bottom: 10px;">
+                                <div 
+                                    v-for="(name, key) in availableTones"
+                                    :key="key"
+                                    class="tone-chip"
+                                    :class="{ active: selectedTone === key }"
+                                    @click="selectedTone = key"
+                                >
+                                    {{ name }}
+                                </div>
+                            </div>
+                            <button class="btn btn-primary" @click="generateContent" :disabled="isGenerating || selectedPlatforms.length === 0">
+                                {{ isGenerating ? '生成中...' : '🚀 生成内容' }}
+                            </button>
+                        </div>
+                        
+                        <div v-if="selectedPhoto.status === 'analyzing'" class="empty-state">
+                            <div class="loading"></div>
+                            <p style="margin-top: 8px; font-size: 13px;">AI 正在分析图片...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Editor + Schedule -->
+                    <div class="card" v-if="selectedPhoto && selectedPhoto.status === 'ready' && currentPreview">
+                        <div class="platform-tabs">
+                            <div 
+                                v-for="(info, key) in availablePlatforms"
+                                :key="key"
+                                class="platform-tab"
+                                :class="{ active: activePlatform === key }"
+                                @click="activePlatform = key"
+                                v-if="selectedPhoto.platforms.includes(key)"
+                            >
+                                {{ info.icon }} {{ info.name }}
+                            </div>
+                        </div>
+                        
+                        <div class="editor-field">
+                            <label>{{ activePlatform === 'linkedin' ? 'Hook' : activePlatform === 'instagram' ? 'Caption' : '标题' }}</label>
+                            <input type="text" v-model="editableContent.title" @input="updatePreview">
+                        </div>
+                        
+                        <div class="editor-field">
+                            <label>正文</label>
+                            <textarea v-model="editableContent.body" @input="updatePreview"></textarea>
+                        </div>
+                        
+                        <div class="editor-field">
+                            <label>标签</label>
+                            <input type="text" v-model="editableContent.hashtags" @input="updatePreview">
+                        </div>
+                        
+                        <div class="action-bar">
+                            <button class="btn btn-primary" @click="regenerateContent">🔄 重新生成</button>
+                            <button class="btn btn-secondary" @click="copyContent">📋 复制</button>
+                            <button class="btn btn-secondary" @click="exportToDrive(activePlatform)">💾 保存 {{ availablePlatforms[activePlatform]?.name }}</button>
+                        </div>
+                        
+                        <!-- Scheduling -->
+                        <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid #eee;">
+                            <h3 class="section-title" style="font-size: 13px; margin-bottom: 8px;">📅 发布排期</h3>
+                            <p v-if="selectedPhoto.scheduled_at" style="font-size: 12px; color: #00d26a; margin-bottom: 8px;">
+                                ✓ 已排期: {{ selectedPhoto.scheduled_at }}
+                            </p>
+                            <div v-if="suggestedSlots.length" class="schedule-grid">
+                                <div 
+                                    v-for="slot in suggestedSlots"
+                                    :key="slot.datetime"
+                                    class="schedule-slot"
+                                    :class="{ selected: selectedSlot === slot.datetime }"
+                                    @click="selectSlot(slot.datetime)"
+                                >
+                                    <div class="day">{{ slot.day }}</div>
+                                    <div class="time">{{ slot.time }}</div>
+                                    <div class="score">匹配度 {{ slot.score }}%</div>
+                                </div>
+                            </div>
+                            <button 
+                                class="btn btn-small btn-primary" 
+                                style="margin-top: 10px;"
+                                @click="schedulePost"
+                                :disabled="!selectedSlot"
+                            >
+                                确认排期
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- RIGHT PANEL: Phone Preview -->
+                <div class="phone-container">
+                    <div class="phone-frame">
+                        <div class="phone-screen">
+                            <div class="phone-notch"></div>
+                            
+                            <div class="preview-scroll" v-if="currentPreview">
+                                <!-- XIAOHONGSHU -->
+                                <template v-if="activePlatform === 'xiaohongshu' && currentPreview.xiaohongshu">
+                                    <div class="xhs-header">
+                                        <div class="xhs-avatar"></div>
+                                        <div class="xhs-user-info">
+                                            <div class="xhs-username">{{ currentPreview.xiaohongshu.author.name }}</div>
+                                            <div class="xhs-followers">{{ currentPreview.xiaohongshu.author.followers }} 粉丝</div>
+                                        </div>
+                                        <button class="xhs-follow-btn">关注</button>
+                                    </div>
+                                    <div class="xhs-image-container">
+                                        <img :src="currentPreview.xiaohongshu.cover_image" class="xhs-image" v-if="currentPreview.xiaohongshu.cover_image">
+                                        <div class="xhs-image-indicator">1/1</div>
+                                    </div>
+                                    <div class="xhs-actions">
+                                        <div class="xhs-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                                            {{ currentPreview.xiaohongshu.likes }}
+                                        </div>
+                                        <div class="xhs-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                                            {{ currentPreview.xiaohongshu.comments }}
+                                        </div>
+                                        <div class="xhs-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                                            {{ currentPreview.xiaohongshu.saves }}
+                                        </div>
+                                        <div class="xhs-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+                                        </div>
+                                    </div>
+                                    <div class="xhs-content">
+                                        <div class="xhs-title">{{ currentPreview.xiaohongshu.title }}</div>
+                                        <div class="xhs-body">{{ currentPreview.xiaohongshu.body }}</div>
+                                        <div class="xhs-hashtags">{{ currentPreview.xiaohongshu.hashtags.join(' ') }}</div>
+                                    </div>
+                                    <div class="xhs-music-bar">
+                                        <svg class="xhs-music-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                                        <span>{{ currentPreview.xiaohongshu.music }}</span>
+                                    </div>
+                                    <div class="xhs-meta">
+                                        <span>{{ currentPreview.xiaohongshu.post_time }}</span>
+                                        <span>{{ currentPreview.xiaohongshu.location }}</span>
+                                    </div>
+                                </template>
+                                
+                                <!-- INSTAGRAM -->
+                                <template v-if="activePlatform === 'instagram' && currentPreview.instagram">
+                                    <div class="ig-header">
+                                        <div class="ig-avatar"></div>
+                                        <div class="ig-username">{{ currentPreview.instagram.username }}</div>
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+                                    </div>
+                                    <img :src="currentPreview.instagram.cover_image" class="ig-image" v-if="currentPreview.instagram.cover_image">
+                                    <div class="ig-actions">
+                                        <div class="ig-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                                        </div>
+                                        <div class="ig-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                                        </div>
+                                        <div class="ig-action">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 17H2a3 3 0 0 0 3-3V9a7 7 0 0 1 14 0v5a3 3 0 0 0 3 3zm-8.27 4a2 2 0 0 1-3.46 0"/></svg>
+                                        </div>
+                                        <div class="ig-action" style="margin-left: auto;">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                                        </div>
+                                    </div>
+                                    <div class="ig-likes">{{ currentPreview.instagram.likes }} likes</div>
+                                    <div class="ig-caption">
+                                        <span class="username">{{ currentPreview.instagram.username }}</span>
+                                        {{ currentPreview.instagram.caption }}
+                                        <div style="color: #00376b; margin-top: 4px;">{{ currentPreview.instagram.hashtags.join(' ') }}</div>
+                                    </div>
+                                    <div class="ig-comments">View all {{ currentPreview.instagram.comments_count }} comments</div>
+                                    <div class="ig-time">{{ currentPreview.instagram.post_time }}</div>
+                                </template>
+                                
+                                <!-- LINKEDIN -->
+                                <template v-if="activePlatform === 'linkedin' && currentPreview.linkedin">
+                                    <div class="li-header">
+                                        <div class="li-avatar"></div>
+                                        <div>
+                                            <div class="li-name">{{ currentPreview.linkedin.author_name }}</div>
+                                            <div class="li-headline">{{ currentPreview.linkedin.author_headline }}</div>
+                                            <div class="li-time">{{ currentPreview.linkedin.post_time || '2h' }} • 🌐</div>
+                                        </div>
+                                        <div class="li-follow">+ Follow</div>
+                                    </div>
+                                    <div class="li-body">
+                                        <div style="font-weight: 600; margin-bottom: 8px;">{{ currentPreview.linkedin.hook }}</div>
+                                        <div style="white-space: pre-wrap;">{{ currentPreview.linkedin.body }}</div>
+                                        <div v-if="currentPreview.linkedin.takeaway" style="margin-top: 10px; padding: 10px; background: #f3f6f8; border-radius: 6px;">
+                                            <strong>Key takeaway:</strong> {{ currentPreview.linkedin.takeaway }}
+                                        </div>
+                                        <div v-if="currentPreview.linkedin.cta" style="margin-top: 10px; color: #0a66c2; font-weight: 600;">
+                                            {{ currentPreview.linkedin.cta }}
+                                        </div>
+                                        <div style="color: #0a66c2; margin-top: 10px;">{{ currentPreview.linkedin.hashtags.join(' ') }}</div>
+                                    </div>
+                                    <img :src="currentPreview.linkedin.cover_image" class="li-image" v-if="currentPreview.linkedin.cover_image">
+                                    <div class="li-stats">
+                                        <span>{{ currentPreview.linkedin.likes }} reactions • {{ currentPreview.linkedin.comments }} comments</span>
+                                        <span>{{ currentPreview.linkedin.reposts }} reposts</span>
+                                    </div>
+                                    <div class="li-actions">
+                                        <div class="li-action">👍 Like</div>
+                                        <div class="li-action">💬 Comment</div>
+                                        <div class="li-action">🔄 Repost</div>
+                                        <div class="li-action">📤 Send</div>
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <div v-else class="empty-state" style="flex: 1; display: flex; flex-direction: column; justify-content: center;">
+                                <p style="font-size: 13px;">选择一张照片并生成内容<br>查看平台预览效果</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div v-if="toastMessage" class="toast">{{ toastMessage }}</div>
+    </div>
+    
+    <script>
+        const { createApp, ref, reactive, onMounted, computed } = Vue;
+        
+        createApp({
+            setup() {
+                const isWatching = ref(false);
+                const lastCheck = ref(null);
+                const queueSize = ref(0);
+                const processedCount = ref(0);
+                const scheduledCount = ref(0);
+                const photos = ref([]);
+                const selectedPhoto = ref(null);
+                const selectedPhotoIds = ref([]);
+                const activePlatform = ref('xiaohongshu');
+                const selectedPlatforms = ref(['xiaohongshu', 'instagram']);
+                const selectedTone = ref('warm_friend');
+                const isGenerating = ref(false);
+                const isBatching = ref(false);
+                const isSyncing = ref(false);
+                const toastMessage = ref('');
+                const availableTones = ref({});
+                const availablePlatforms = ref({});
+                const suggestedSlots = ref([]);
+                const selectedSlot = ref(null);
+                
+                const config = reactive({
+                    provider: 'anthropic',
+                    default_tone: 'warm_friend',
+                    default_platforms: ['xiaohongshu', 'instagram'],
+                    has_api_key: false,
+                    api_key_input: ''
+                });
+                
+                const editableContent = reactive({
+                    title: '', body: '', hashtags: ''
+                });
+                
+                let socket = null;
+                
+                const currentPreview = computed(() => {
+                    if (!selectedPhoto.value) return null;
+                    return selectedPhoto.value.platform_previews || null;
+                });
+                
+                const allPendingSelected = computed(() => {
+                    const pending = photos.value.filter(p => p.status === 'pending');
+                    return pending.length > 0 && pending.every(p => selectedPhotoIds.value.includes(p.id));
+                });
+                
+                onMounted(() => {
+                    socket = io();
+                    socket.on('connect', () => console.log('Connected'));
+                    socket.on('status', (data) => { isWatching.value = data.is_watching; });
+                    socket.on('status_update', (data) => {
+                        lastCheck.value = data.last_check;
+                        queueSize.value = data.queue_size;
+                        processedCount.value = data.processed_count;
+                        scheduledCount.value = data.scheduled_count || 0;
+                    });
+                    socket.on('new_photo_detected', (data) => {
+                        photos.value.push({
+                            id: data.photo_id, file_name: data.file_name,
+                            image_base64: data.thumbnail, status: 'pending'
+                        });
+                        queueSize.value++;
+                        showToast('新照片: ' + data.file_name);
+                    });
+                    socket.on('generation_started', (data) => {
+                        const p = photos.value.find(x => x.id === data.post_id);
+                        if (p) p.status = 'analyzing';
+                    });
+                    socket.on('batch_progress', (data) => {
+                        showToast(`批量生成中... ${data.current}`);
+                    });
+                    fetchStatus();
+                    fetchPosts();
+                });
+                
+                const fetchStatus = async () => {
+                    try {
+                        const res = await fetch('/api/status');
+                        const data = await res.json();
+                        isWatching.value = data.is_watching;
+                        lastCheck.value = data.last_check;
+                        queueSize.value = data.queue_size;
+                        processedCount.value = data.processed_count;
+                        scheduledCount.value = data.scheduled_count || 0;
+                        if (data.config) {
+                            config.provider = data.config.provider;
+                            config.default_tone = data.config.default_tone;
+                            config.default_platforms = data.config.default_platforms || ['xiaohongshu', 'instagram'];
+                            config.has_api_key = data.config.has_api_key;
+                            selectedPlatforms.value = [...config.default_platforms];
+                            selectedTone.value = data.config.default_tone;
+                        }
+                        if (data.tones) availableTones.value = data.tones;
+                        if (data.platforms) availablePlatforms.value = data.platforms;
+                    } catch (e) { console.error(e); }
+                };
+                
+                const fetchPosts = async () => {
+                    try {
+                        const res = await fetch('/api/posts');
+                        const data = await res.json();
+                        photos.value = data;
+                        processedCount.value = data.filter(p => p.status === 'ready').length;
+                        queueSize.value = data.filter(p => p.status === 'pending' || p.status === 'analyzing').length;
+                        scheduledCount.value = data.filter(p => p.status === 'published' || p.scheduled_at).length;
+                    } catch (e) { console.error(e); }
+                };
+                
+                const toggleWatching = () => {
+                    if (isWatching.value) socket.emit('stop_watching');
+                    else socket.emit('start_watching');
+                };
+                
+                const togglePlatform = (key) => {
+                    if (selectedPlatforms.value.includes(key)) {
+                        if (selectedPlatforms.value.length > 1) {
+                            selectedPlatforms.value = selectedPlatforms.value.filter(k => k !== key);
+                        }
+                    } else {
+                        selectedPlatforms.value.push(key);
+                    }
+                };
+                
+                const toggleDefaultPlatform = (key) => {
+                    if (config.default_platforms.includes(key)) {
+                        if (config.default_platforms.length > 1) {
+                            config.default_platforms = config.default_platforms.filter(k => k !== key);
+                        }
+                    } else {
+                        config.default_platforms.push(key);
+                    }
+                    updateConfig();
+                };
+                
+                const selectPhoto = async (photo) => {
+                    selectedPhoto.value = photo;
+                    activePlatform.value = photo.platforms?.[0] || 'xiaohongshu';
+                    selectedSlot.value = null;
+                    
+                    if (photo.platform_previews) {
+                        const preview = photo.platform_previews[activePlatform.value];
+                        if (preview) {
+                            editableContent.title = preview.title || preview.caption || preview.hook || '';
+                            editableContent.body = preview.body || preview.caption || '';
+                            editableContent.hashtags = Array.isArray(preview.hashtags) ? preview.hashtags.join(' ') : '';
+                        }
+                    } else {
+                        selectedPlatforms.value = [...config.default_platforms];
+                        selectedTone.value = config.default_tone;
+                        editableContent.title = '';
+                        editableContent.body = '';
+                        editableContent.hashtags = '';
+                    }
+                    
+                    // Load schedule suggestions
+                    if (photo.status === 'ready') {
+                        fetchSuggestions();
+                    }
+                };
+                
+                const fetchSuggestions = async () => {
+                    try {
+                        const res = await fetch('/api/suggest-times', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ platforms: selectedPhoto.value.platforms || ['xiaohongshu'] })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const all = [];
+                            Object.values(data.suggestions).forEach(arr => all.push(...arr));
+                            // dedupe by datetime
+                            const seen = new Set();
+                            suggestedSlots.value = all.filter(s => {
+                                if (seen.has(s.datetime)) return false;
+                                seen.add(s.datetime);
+                                return true;
+                            }).sort((a, b) => b.score - a.score).slice(0, 12);
+                        }
+                    } catch (e) { console.error(e); }
+                };
+                
+                const generateContent = async () => {
+                    if (!selectedPhoto.value) return;
+                    if (!config.has_api_key && !config.api_key_input) {
+                        showToast('请先配置 API Key'); return;
+                    }
+                    isGenerating.value = true;
+                    try {
+                        const res = await fetch('/api/generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                post_id: selectedPhoto.value.id,
+                                platforms: selectedPlatforms.value,
+                                tone_key: selectedTone.value
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const idx = photos.value.findIndex(p => p.id === selectedPhoto.value.id);
+                            if (idx >= 0) photos.value[idx] = data.post;
+                            selectPhoto(data.post);
+                            showToast('生成成功！');
+                            queueSize.value = Math.max(0, queueSize.value - 1);
+                            processedCount.value++;
+                        } else {
+                            showToast('失败: ' + (data.error || '未知'));
+                        }
+                    } catch (e) {
+                        showToast('失败: ' + e.message);
+                    } finally {
+                        isGenerating.value = false;
+                    }
+                };
+                
+                const batchGenerate = async () => {
+                    if (selectedPhotoIds.value.length === 0) return;
+                    isBatching.value = true;
+                    try {
+                        const res = await fetch('/api/batch-generate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                post_ids: selectedPhotoIds.value,
+                                platforms: selectedPlatforms.value,
+                                tone_key: selectedTone.value
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            selectedPhotoIds.value = [];
+                            await fetchPosts();
+                            showToast(`批量生成完成！成功 ${data.results.filter(r => r.success).length}/${data.results.length}`);
+                        }
+                    } catch (e) {
+                        showToast('批量失败: ' + e.message);
+                    } finally {
+                        isBatching.value = false;
+                    }
+                };
+                
+                const selectAllPending = () => {
+                    const pending = photos.value.filter(p => p.status === 'pending').map(p => p.id);
+                    if (allPendingSelected.value) {
+                        selectedPhotoIds.value = selectedPhotoIds.value.filter(id => !pending.includes(id));
+                    } else {
+                        selectedPhotoIds.value = [...new Set([...selectedPhotoIds.value, ...pending])];
+                    }
+                };
+                
+                const updatePreview = () => {
+                    if (!selectedPhoto.value || !selectedPhoto.value.platform_previews) return;
+                    const platform = activePlatform.value;
+                    const preview = selectedPhoto.value.platform_previews[platform];
+                    if (preview) {
+                        if (platform === 'linkedin') preview.hook = editableContent.title;
+                        else if (platform === 'instagram') preview.caption = editableContent.title;
+                        else preview.title = editableContent.title;
+                        
+                        if (platform === 'instagram') preview.caption = editableContent.body;
+                        else preview.body = editableContent.body;
+                        
+                        preview.hashtags = editableContent.hashtags.split(/\s+/).filter(h => h);
+                    }
+                };
+                
+                const regenerateContent = () => {
+                    if (!selectedPhoto.value) return;
+                    selectedPhoto.value.status = 'pending';
+                    // Move back to queue logic on server side will handle this
+                    generateContent();
+                };
+                
+                const copyContent = () => {
+                    const text = `${editableContent.title}\n\n${editableContent.body}\n\n${editableContent.hashtags}`;
+                    navigator.clipboard.writeText(text).then(() => showToast('已复制！'));
+                };
+                
+                const exportToDrive = async (platform) => {
+                    if (!selectedPhoto.value) return;
+                    try {
+                        const res = await fetch(`/api/export/${selectedPhoto.value.id}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ platform })
+                        });
+                        const data = await res.json();
+                        if (data.success) showToast('已保存到 Drive');
+                        else showToast('保存失败');
+                    } catch (e) { showToast('保存失败'); }
+                };
+                
+                const schedulePost = async () => {
+                    if (!selectedPhoto.value || !selectedSlot.value) return;
+                    try {
+                        const res = await fetch('/api/schedule', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                post_id: selectedPhoto.value.id,
+                                scheduled_at: selectedSlot.value,
+                                platforms: selectedPhoto.value.platforms
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            selectedPhoto.value.scheduled_at = data.scheduled_at;
+                            scheduledCount.value++;
+                            showToast('排期成功！');
+                        }
+                    } catch (e) { showToast('排期失败'); }
+                };
+                
+                const selectSlot = (dt) => {
+                    selectedSlot.value = dt;
+                };
+                
+                const runTakeoutSync = async () => {
+                    isSyncing.value = true;
+                    try {
+                        const res = await fetch('/api/takeout-sync', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ target: 'selected', delete_after_import: false })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            showToast(`Takeout 同步完成！导入 ${data.imported} 张照片`);
+                        } else {
+                            showToast(data.message || '同步完成');
+                        }
+                    } catch (e) {
+                        showToast('同步失败: ' + e.message);
+                    } finally {
+                        isSyncing.value = false;
+                    }
+                };
+                
+                const updateConfig = async () => {
+                    try {
+                        await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                provider: config.provider,
+                                tone: config.default_tone,
+                                platforms: config.default_platforms
+                            })
+                        });
+                    } catch (e) { console.error(e); }
+                };
+                
+                const saveApiKey = async () => {
+                    if (!config.api_key_input) return;
+                    try {
+                        const res = await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ api_key: config.api_key_input })
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            config.has_api_key = true;
+                            config.api_key_input = '';
+                            showToast('API Key 已保存');
+                        }
+                    } catch (e) { console.error(e); }
+                };
+                
+                const showToast = (msg) => {
+                    toastMessage.value = msg;
+                    setTimeout(() => { toastMessage.value = ''; }, 3000);
+                };
+                
+                const statusText = (s) => {
+                    const map = { pending: '待生成', analyzing: '分析中', ready: '就绪', published: '已发布' };
+                    return map[s] || s;
+                };
+                
+                const formatTime = (iso) => {
+                    if (!iso) return '';
+                    const d = new Date(iso);
+                    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+                };
+                
+                return {
+                    isWatching, lastCheck, queueSize, processedCount, scheduledCount,
+                    photos, selectedPhoto, selectedPhotoIds, activePlatform,
+                    selectedPlatforms, selectedTone, isGenerating, isBatching, isSyncing,
+                    toastMessage, availableTones, availablePlatforms, suggestedSlots, selectedSlot,
+                    config, editableContent, currentPreview, allPendingSelected,
+                    toggleWatching, togglePlatform, toggleDefaultPlatform,
+                    selectPhoto, generateContent, batchGenerate, selectAllPending,
+                    updatePreview, regenerateContent, copyContent, exportToDrive,
+                    schedulePost, selectSlot, runTakeoutSync, updateConfig, saveApiKey,
+                    statusText, formatTime
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
