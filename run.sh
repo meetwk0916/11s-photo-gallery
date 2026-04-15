@@ -47,10 +47,10 @@ case "$COMMAND" in
     fi
 
     # Run the app in background
-    echo "🌐 Starting web server in background..."
+    echo "🌐 Starting web server in background (Gunicorn + Eventlet)..."
     echo "Open: http://localhost:5000"
     echo ""
-    nohup python3 "$SCRIPT_DIR/app.py" > "$LOGFILE" 2>&1 &
+    nohup gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 app:app > "$LOGFILE" 2>&1 &
     echo $! > "$PIDFILE"
     echo "Server started with PID $(cat "$PIDFILE"). Logs: $LOGFILE"
     ;;
@@ -83,11 +83,11 @@ case "$COMMAND" in
     ;;
 
   foreground|fg)
-    echo "🌐 Starting web server in foreground..."
+    echo "🌐 Starting web server in foreground (Gunicorn + Eventlet)..."
     echo "Open: http://localhost:5000"
     echo ""
     source "$VENV_DIR/bin/activate"
-    python3 "$SCRIPT_DIR/app.py"
+    gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 app:app
     ;;
 
   *)

@@ -6,6 +6,9 @@ Supports: Xiaohongshu, Instagram, LinkedIn
 Features: batch generation, scheduling, Google Photos Takeout sync
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import sys
 import json
@@ -36,7 +39,7 @@ TOKEN_PATH = os.path.join(HERMES_HOME, "google_token.json")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-platform-pipeline-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 class PipelineState:
     def __init__(self):
@@ -771,4 +774,4 @@ if __name__ == '__main__':
     print(f"Provider: {state.config.llm_provider}")
     print(f"API Key: {'Yes' if state.config.active_api_key else 'No'}")
     print("=" * 60)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False)
