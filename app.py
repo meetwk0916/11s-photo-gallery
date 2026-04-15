@@ -250,48 +250,61 @@ def watch_drive_folder():
 
 def build_xiaohongshu_preview(post: PhotoPost, content: Dict) -> Dict:
     xhs = content.get("xiaohongshu", {})
+    cfg = state.config
+    stats = cfg.dummy_stats.get("xiaohongshu", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
         "title": xhs.get("title_options", [""])[0] if xhs.get("title_options") else "",
         "body": xhs.get("body", ""),
         "hashtags": xhs.get("hashtags", []),
-        "likes": "1.2k", "saves": "856", "comments": "128",
-        "author": {"name": "Your Name", "avatar": None, "followers": "5.2k"},
-        "location": "📍 发现美好", "post_time": "刚刚",
+        "likes": stats.get("likes", "0"),
+        "saves": stats.get("saves", "0"),
+        "comments": stats.get("comments", "0"),
+        "author": {
+            "name": cfg.author_name,
+            "avatar": cfg.author_avatar,
+            "followers": cfg.author_followers
+        },
+        "location": stats.get("location", ""),
+        "post_time": stats.get("post_time", ""),
         "music": xhs.get("music_suggestion", "🎵 原声"),
     }
 
 
 def build_instagram_preview(post: PhotoPost, content: Dict) -> Dict:
     ig = content.get("instagram", {})
+    cfg = state.config
+    stats = cfg.dummy_stats.get("instagram", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "username": "your.handle",
-        "avatar": None,
-        "likes": "2.4k",
+        "username": cfg.author_handle,
+        "avatar": cfg.author_avatar,
+        "likes": stats.get("likes", "0"),
         "caption": ig.get("caption", ""),
         "hashtags": ig.get("hashtags", []),
         "location": ig.get("location_tag", ""),
-        "comments_count": "42",
-        "post_time": "2 hours ago",
+        "comments_count": stats.get("comments_count", "0"),
+        "post_time": stats.get("post_time", ""),
         "story_text": ig.get("story_text", ""),
     }
 
 
 def build_linkedin_preview(post: PhotoPost, content: Dict) -> Dict:
     li = content.get("linkedin", {})
+    cfg = state.config
+    stats = cfg.dummy_stats.get("linkedin", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "author_name": "Your Name",
-        "author_headline": "Content Creator | Visual Storyteller",
+        "author_name": cfg.author_name,
+        "author_headline": cfg.author_headline,
         "hook": li.get("hook", ""),
         "body": li.get("body", ""),
         "takeaway": li.get("takeaway", ""),
         "hashtags": li.get("hashtags", []),
         "cta": li.get("cta", ""),
-        "likes": "328",
-        "comments": "18",
-        "reposts": "24",
+        "likes": stats.get("likes", "0"),
+        "comments": stats.get("comments", "0"),
+        "reposts": stats.get("reposts", "0"),
     }
 
 

@@ -28,13 +28,51 @@ class PipelineConfig:
     default_platforms: list = None
     default_tone: str = "warm_friend"
     include_emoji: bool = True
+
+    # Author information
+    author_name: str = "Your Name"
+    author_handle: str = "your.handle"
+    author_avatar: Optional[str] = None
+    author_followers: str = "5.2k"
+    author_headline: str = "Content Creator | Visual Storyteller"
+
+    # Dummy stats for previews
+    dummy_stats: dict = None
     
     def __post_init__(self):
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", self.openai_api_key)
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", self.gemini_api_key)
+
+        self.author_name = os.environ.get("AUTHOR_NAME", self.author_name)
+        self.author_handle = os.environ.get("AUTHOR_HANDLE", self.author_handle)
+        self.author_avatar = os.environ.get("AUTHOR_AVATAR", self.author_avatar)
+        self.author_followers = os.environ.get("AUTHOR_FOLLOWERS", self.author_followers)
+        self.author_headline = os.environ.get("AUTHOR_HEADLINE", self.author_headline)
+
         if self.default_platforms is None:
             self.default_platforms = ["xiaohongshu", "instagram"]
+
+        if self.dummy_stats is None:
+            self.dummy_stats = {
+                "xiaohongshu": {
+                    "likes": "1.2k",
+                    "saves": "856",
+                    "comments": "128",
+                    "location": "📍 发现美好",
+                    "post_time": "刚刚"
+                },
+                "instagram": {
+                    "likes": "2.4k",
+                    "comments_count": "42",
+                    "post_time": "2 hours ago"
+                },
+                "linkedin": {
+                    "likes": "328",
+                    "comments": "18",
+                    "reposts": "24"
+                }
+            }
     
     @property
     def active_api_key(self) -> Optional[str]:
