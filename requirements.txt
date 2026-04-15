@@ -16,4 +16,5 @@ google-generativeai==0.7.0
 
 # Utilities
 python-socketio==5.11.0
-eventlet==0.36.1
+# Note: async_mode='threading' is used in app.py for broad compatibility.
+# If you need higher concurrency, install eventlet or gevent and update async_mode.
