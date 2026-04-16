@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import eventlet
+eventlet.monkey_patch()
+
 """
 Multi-Platform Photo Content Pipeline - Web UI
 ===============================================
@@ -36,7 +39,7 @@ TOKEN_PATH = os.path.join(HERMES_HOME, "google_token.json")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-platform-pipeline-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 class PipelineState:
     def __init__(self):
@@ -249,49 +252,55 @@ def watch_drive_folder():
 # ==================== Preview Builders ====================
 
 def build_xiaohongshu_preview(post: PhotoPost, content: Dict) -> Dict:
-    xhs = content.get("xiaohongshu", {})
+    xhs = content.get("platforms", {}).get("xiaohongshu", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
         "title": xhs.get("title_options", [""])[0] if xhs.get("title_options") else "",
         "body": xhs.get("body", ""),
         "hashtags": xhs.get("hashtags", []),
-        "likes": "1.2k", "saves": "856", "comments": "128",
-        "author": {"name": "Your Name", "avatar": None, "followers": "5.2k"},
+        "likes": state.config.dummy_likes_xhs,
+        "saves": state.config.dummy_saves_xhs,
+        "comments": state.config.dummy_comments_xhs,
+        "author": {
+            "name": state.config.author_name,
+            "avatar": state.config.author_avatar,
+            "followers": state.config.author_followers
+        },
         "location": "📍 发现美好", "post_time": "刚刚",
         "music": xhs.get("music_suggestion", "🎵 原声"),
     }
 
 
 def build_instagram_preview(post: PhotoPost, content: Dict) -> Dict:
-    ig = content.get("instagram", {})
+    ig = content.get("platforms", {}).get("instagram", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "username": "your.handle",
-        "avatar": None,
-        "likes": "2.4k",
+        "username": state.config.author_handle,
+        "avatar": state.config.author_avatar,
+        "likes": state.config.dummy_likes_ig,
         "caption": ig.get("caption", ""),
         "hashtags": ig.get("hashtags", []),
         "location": ig.get("location_tag", ""),
-        "comments_count": "42",
+        "comments_count": state.config.dummy_comments_ig,
         "post_time": "2 hours ago",
         "story_text": ig.get("story_text", ""),
     }
 
 
 def build_linkedin_preview(post: PhotoPost, content: Dict) -> Dict:
-    li = content.get("linkedin", {})
+    li = content.get("platforms", {}).get("linkedin", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "author_name": "Your Name",
-        "author_headline": "Content Creator | Visual Storyteller",
+        "author_name": state.config.author_name,
+        "author_headline": state.config.author_headline,
         "hook": li.get("hook", ""),
         "body": li.get("body", ""),
         "takeaway": li.get("takeaway", ""),
         "hashtags": li.get("hashtags", []),
         "cta": li.get("cta", ""),
-        "likes": "328",
-        "comments": "18",
-        "reposts": "24",
+        "likes": state.config.dummy_likes_li,
+        "comments": state.config.dummy_comments_li,
+        "reposts": state.config.dummy_reposts_li,
     }
 
 
