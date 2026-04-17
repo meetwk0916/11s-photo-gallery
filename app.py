@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import eventlet
+eventlet.monkey_patch()
+
 """
 Multi-Platform Photo Content Pipeline - Web UI
 ===============================================
@@ -36,7 +39,7 @@ TOKEN_PATH = os.path.join(HERMES_HOME, "google_token.json")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-platform-pipeline-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 class PipelineState:
     def __init__(self):
@@ -250,13 +253,14 @@ def watch_drive_folder():
 
 def build_xiaohongshu_preview(post: PhotoPost, content: Dict) -> Dict:
     xhs = content.get("xiaohongshu", {})
+    c = state.config
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
         "title": xhs.get("title_options", [""])[0] if xhs.get("title_options") else "",
         "body": xhs.get("body", ""),
         "hashtags": xhs.get("hashtags", []),
-        "likes": "1.2k", "saves": "856", "comments": "128",
-        "author": {"name": "Your Name", "avatar": None, "followers": "5.2k"},
+        "likes": c.engagement_likes, "saves": c.engagement_saves, "comments": c.engagement_comments,
+        "author": {"name": c.author_name, "avatar": c.author_avatar, "followers": c.author_followers},
         "location": "📍 发现美好", "post_time": "刚刚",
         "music": xhs.get("music_suggestion", "🎵 原声"),
     }
