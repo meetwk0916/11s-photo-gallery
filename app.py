@@ -6,6 +6,9 @@ Supports: Xiaohongshu, Instagram, LinkedIn
 Features: batch generation, scheduling, Google Photos Takeout sync
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import sys
 import json
@@ -36,7 +39,7 @@ TOKEN_PATH = os.path.join(HERMES_HOME, "google_token.json")
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-platform-pipeline-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 class PipelineState:
     def __init__(self):
@@ -256,7 +259,7 @@ def build_xiaohongshu_preview(post: PhotoPost, content: Dict) -> Dict:
         "body": xhs.get("body", ""),
         "hashtags": xhs.get("hashtags", []),
         "likes": "1.2k", "saves": "856", "comments": "128",
-        "author": {"name": "Your Name", "avatar": None, "followers": "5.2k"},
+        "author": {"name": state.config.author_name, "avatar": None, "followers": state.config.author_followers},
         "location": "📍 发现美好", "post_time": "刚刚",
         "music": xhs.get("music_suggestion", "🎵 原声"),
     }
@@ -266,7 +269,7 @@ def build_instagram_preview(post: PhotoPost, content: Dict) -> Dict:
     ig = content.get("instagram", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "username": "your.handle",
+        "username": state.config.author_handle,
         "avatar": None,
         "likes": "2.4k",
         "caption": ig.get("caption", ""),
@@ -282,8 +285,8 @@ def build_linkedin_preview(post: PhotoPost, content: Dict) -> Dict:
     li = content.get("linkedin", {})
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
-        "author_name": "Your Name",
-        "author_headline": "Content Creator | Visual Storyteller",
+        "author_name": state.config.author_name,
+        "author_headline": state.config.author_headline,
         "hook": li.get("hook", ""),
         "body": li.get("body", ""),
         "takeaway": li.get("takeaway", ""),

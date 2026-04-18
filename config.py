@@ -29,10 +29,20 @@ class PipelineConfig:
     default_tone: str = "warm_friend"
     include_emoji: bool = True
     
+    # Author settings
+    author_name: str = "Your Name"
+    author_handle: str = "your.handle"
+    author_followers: str = "5.2k"
+    author_headline: str = "Content Creator | Visual Storyteller"
+
     def __post_init__(self):
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", self.openai_api_key)
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", self.gemini_api_key)
+        self.author_name = os.environ.get("AUTHOR_NAME", self.author_name)
+        self.author_handle = os.environ.get("AUTHOR_HANDLE", self.author_handle)
+        self.author_followers = os.environ.get("AUTHOR_FOLLOWERS", self.author_followers)
+        self.author_headline = os.environ.get("AUTHOR_HEADLINE", self.author_headline)
         if self.default_platforms is None:
             self.default_platforms = ["xiaohongshu", "instagram"]
     
