@@ -12,6 +12,8 @@ import json
 import base64
 import threading
 import time
+import math
+import re
 import zipfile
 import shutil
 from datetime import datetime, timedelta
@@ -19,20 +21,35 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from collections import deque
+from uuid import uuid4
 
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from werkzeug.utils import secure_filename
 
 from config import PipelineConfig, PLATFORM_CONFIGS, SCHEDULING_CONFIG, XIAOHONGSHU_TONES
 from ai_generator import generate_multi_platform_content
 
 HERMES_HOME = os.path.expanduser("~/.hermes")
 TOKEN_PATH = os.path.join(HERMES_HOME, "google_token.json")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+LOCAL_UPLOAD_DIR = DATA_DIR / "uploads"
+LOCAL_EXPORT_DIR = DATA_DIR / "exports"
+
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif"}
+GPS_INFO_TAG = 34853
+EARTH_RADIUS_KM = 6371.0
+JOURNEY_MAX_DISTANCE_KM = 45
+JOURNEY_MAX_LOCATION_WINDOW_HOURS = 72
+JOURNEY_MAX_FALLBACK_WINDOW_HOURS = 18
+TRAVEL_THEME_KEYWORDS = {
+    "城市漫游": ["city", "citywalk", "street", "bund", "shanghai", "hangzhou", "beijing", "chengdu", "上海", "杭州", "北京", "成都", "外滩", "街头"],
+    "山野徒步": ["mountain", "hill", "hike", "trail", "peak", "forest", "camp", "山", "徒步", "森林", "露营"],
+    "海边度假": ["beach", "sea", "ocean", "coast", "island", "sanya", "xiamen", "青岛", "三亚", "厦门", "海边", "沙滩"],
+    "古镇人文": ["temple", "museum", "oldtown", "heritage", "古镇", "寺", "博物馆", "建筑", "历史"],
+    "咖啡美食": ["coffee", "cafe", "brunch", "food", "meal", "latte", "咖啡", "甜品", "美食", "餐厅"],
+}
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'multi-platform-pipeline-secret'
@@ -70,6 +87,13 @@ class PhotoPost:
     status: str
     tone_key: str
     platforms: List[str]
+    source: str
+    journey_label: str
+    journey_theme: str
+    journey_location: str
+    journey_window: str
+    photo_count: int
+    gallery: List[Dict]
     scheduled_at: Optional[str]
     created_at: str
     updated_at: str
@@ -80,6 +104,16 @@ class PhotoPost:
 def get_drive_service():
     if state.drive_service:
         return state.drive_service
+
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+    except ImportError as error:
+        raise RuntimeError(
+            "Google Drive dependencies are not installed. Install requirements.txt to enable Drive mode."
+        ) from error
+
     if not os.path.exists(TOKEN_PATH):
         raise FileNotFoundError(f"Google token not found at {TOKEN_PATH}. Run OAuth setup first.")
     creds = Credentials.from_authorized_user_file(TOKEN_PATH)
@@ -148,6 +182,8 @@ def list_photos_in_folder(service, folder_id: str) -> List[Dict]:
 
 def download_photo(service, file_id: str) -> bytes:
     from io import BytesIO
+    from googleapiclient.http import MediaIoBaseDownload
+
     req = service.files().get_media(fileId=file_id)
     fh = BytesIO()
     dl = MediaIoBaseDownload(fh, req)
@@ -164,6 +200,8 @@ def move_file(service, file_id: str, new_parent: str, old_parent: str):
 
 def upload_file(service, parent_id: str, name: str, content: bytes, mimetype: str = "text/plain") -> str:
     from io import BytesIO
+    from googleapiclient.http import MediaIoBaseUpload
+
     meta = {"name": name, "parents": [parent_id]}
     media = MediaIoBaseUpload(BytesIO(content), mimetype=mimetype)
     f = service.files().create(body=meta, media_body=media, fields="id").execute()
@@ -172,6 +210,545 @@ def upload_file(service, parent_id: str, name: str, content: bytes, mimetype: st
 
 def upload_text(service, parent_id: str, name: str, content: str) -> str:
     return upload_file(service, parent_id, name, content.encode("utf-8"))
+
+
+def ensure_local_workspace():
+    LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def has_drive_token() -> bool:
+    return os.path.exists(TOKEN_PATH)
+
+
+def is_supported_photo(file_name: str) -> bool:
+    return Path(file_name).suffix.lower() in SUPPORTED_EXTENSIONS
+
+
+def decode_image_payload(image_base64_value: str) -> bytes:
+    payload = image_base64_value.split(",", 1)[1] if image_base64_value.startswith("data:") else image_base64_value
+    return base64.b64decode(payload)
+
+
+def build_local_asset_path(file_name: str) -> Path:
+    ensure_local_workspace()
+    suffix = Path(file_name).suffix.lower() or ".jpg"
+    safe_stem = secure_filename(Path(file_name).stem) or "photo"
+    return LOCAL_UPLOAD_DIR / f"{safe_stem}-{uuid4().hex[:8]}{suffix}"
+
+
+def normalize_exif_text(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value or "")
+
+
+def coerce_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+
+    value_text = normalize_exif_text(value).strip()
+    if not value_text:
+        return None
+
+    for parser in (
+        lambda raw: datetime.strptime(raw, "%Y:%m:%d %H:%M:%S"),
+        lambda raw: datetime.fromisoformat(raw.replace("Z", "+00:00")),
+    ):
+        try:
+            parsed = parser(value_text)
+            return parsed.replace(tzinfo=None)
+        except ValueError:
+            continue
+
+    return None
+
+
+def rational_to_float(value) -> float:
+    if value is None:
+        return 0.0
+
+    if hasattr(value, "numerator") and hasattr(value, "denominator"):
+        return float(value.numerator) / float(value.denominator or 1)
+
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        return float(value[0]) / float(value[1] or 1)
+
+    return float(value)
+
+
+def dms_to_decimal(values, ref) -> Optional[float]:
+    if not values or len(values) < 3:
+        return None
+
+    try:
+        degrees, minutes, seconds = [rational_to_float(part) for part in values[:3]]
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+    decimal = degrees + minutes / 60 + seconds / 3600
+    if normalize_exif_text(ref).upper() in {"S", "W"}:
+        decimal *= -1
+
+    return round(decimal, 6)
+
+
+def format_location_label(location: Optional[Dict]) -> str:
+    if not location:
+        return ""
+    return f"GPS {location['latitude']:.3f}, {location['longitude']:.3f}"
+
+
+def guess_capture_datetime(file_name: str, fallback_iso: Optional[str] = None) -> Optional[datetime]:
+    candidates = [Path(file_name).stem]
+
+    if fallback_iso:
+        candidates.append(fallback_iso)
+
+    patterns = [
+        r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)",
+        r"(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)[-_ ]?([0-2]\d)([0-5]\d)([0-5]\d)",
+    ]
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        for pattern in patterns:
+            match = re.search(pattern, candidate)
+            if not match:
+                continue
+
+            try:
+                values = [int(part) for part in match.groups()]
+                if len(values) == 3:
+                    return datetime(values[0], values[1], values[2])
+                return datetime(values[0], values[1], values[2], values[3], values[4], values[5])
+            except ValueError:
+                continue
+
+        try:
+            return datetime.fromisoformat(candidate.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            continue
+
+    return None
+
+
+def extract_photo_metadata(image_bytes: bytes, file_name: str, fallback_iso: Optional[str] = None) -> Dict:
+    captured_at = None
+    captured_at_source = ""
+    location = None
+
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(image_bytes)) as image:
+            exif = image.getexif()
+
+            if exif:
+                captured_at = (
+                    coerce_datetime(exif.get(36867))
+                    or coerce_datetime(exif.get(36868))
+                    or coerce_datetime(exif.get(306))
+                )
+
+                gps_ifd = {}
+                try:
+                    gps_ifd = exif.get_ifd(GPS_INFO_TAG)
+                except Exception:
+                    gps_ifd = exif.get(GPS_INFO_TAG) or {}
+
+                if gps_ifd:
+                    latitude = dms_to_decimal(gps_ifd.get(2), gps_ifd.get(1))
+                    longitude = dms_to_decimal(gps_ifd.get(4), gps_ifd.get(3))
+                    if latitude is not None and longitude is not None:
+                        location = {
+                            "latitude": latitude,
+                            "longitude": longitude,
+                        }
+    except Exception:
+        pass
+
+    if captured_at:
+        captured_at_source = "exif"
+    else:
+        captured_at = guess_capture_datetime(file_name, fallback_iso)
+        captured_at_source = "filename" if captured_at else "fallback"
+
+    if not captured_at:
+        captured_at = datetime.now()
+        captured_at_source = "upload_time"
+
+    return {
+        "captured_at": captured_at.isoformat(),
+        "captured_at_source": captured_at_source,
+        "location": location,
+        "location_label": format_location_label(location),
+    }
+
+
+def infer_journey_theme(*hints: Optional[str]) -> str:
+    haystack = " ".join([hint for hint in hints if hint]).lower()
+
+    for theme, keywords in TRAVEL_THEME_KEYWORDS.items():
+        if any(keyword in haystack for keyword in keywords):
+            return theme
+
+    return "轻旅行"
+
+
+def get_asset_capture_datetime(asset: Dict) -> Optional[datetime]:
+    return coerce_datetime(asset.get("captured_at")) or guess_capture_datetime(asset.get("file_name", ""))
+
+
+def get_asset_location(asset: Dict) -> Optional[Dict]:
+    location = asset.get("location")
+    if not isinstance(location, dict):
+        return None
+    if "latitude" not in location or "longitude" not in location:
+        return None
+    return location
+
+
+def haversine_distance_km(location_a: Dict, location_b: Dict) -> float:
+    lat1 = math.radians(location_a["latitude"])
+    lon1 = math.radians(location_a["longitude"])
+    lat2 = math.radians(location_b["latitude"])
+    lon2 = math.radians(location_b["longitude"])
+
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    a = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return EARTH_RADIUS_KM * c
+
+
+def summarize_journey_location(assets: List[Dict]) -> str:
+    valid_locations = [get_asset_location(asset) for asset in assets]
+    valid_locations = [location for location in valid_locations if location]
+
+    if not valid_locations:
+        return ""
+
+    avg_lat = sum(location["latitude"] for location in valid_locations) / len(valid_locations)
+    avg_lon = sum(location["longitude"] for location in valid_locations) / len(valid_locations)
+    return format_location_label({"latitude": avg_lat, "longitude": avg_lon})
+
+
+def dominant_journey_theme(assets: List[Dict]) -> str:
+    counts = {}
+
+    for asset in assets:
+        theme = asset.get("theme_hint") or infer_journey_theme(asset.get("file_name", ""), asset.get("location_label", ""))
+        counts[theme] = counts.get(theme, 0) + 1
+
+    if not counts:
+        return "轻旅行"
+
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def sort_assets_for_story(assets: List[Dict]) -> List[Dict]:
+    return sorted(
+        assets,
+        key=lambda asset: (
+            get_asset_capture_datetime(asset) or datetime.max,
+            asset.get("file_name", ""),
+        ),
+    )
+
+
+def group_location_centroid(assets: List[Dict]) -> Optional[Dict]:
+    valid_locations = [get_asset_location(asset) for asset in assets]
+    valid_locations = [location for location in valid_locations if location]
+
+    if not valid_locations:
+        return None
+
+    return {
+        "latitude": sum(location["latitude"] for location in valid_locations) / len(valid_locations),
+        "longitude": sum(location["longitude"] for location in valid_locations) / len(valid_locations),
+    }
+
+
+def should_join_journey_group(asset: Dict, current_group: List[Dict]) -> bool:
+    if not current_group:
+        return True
+
+    asset_dt = get_asset_capture_datetime(asset)
+    latest_group_dt = max((get_asset_capture_datetime(item) for item in current_group), default=None)
+    asset_location = get_asset_location(asset)
+    group_centroid = group_location_centroid(current_group)
+    asset_theme = asset.get("theme_hint") or infer_journey_theme(asset.get("file_name", ""))
+    group_theme = dominant_journey_theme(current_group)
+
+    if asset_dt and latest_group_dt:
+        time_gap = abs(asset_dt - latest_group_dt)
+
+        if asset_location and group_centroid:
+            distance = haversine_distance_km(asset_location, group_centroid)
+            if distance <= JOURNEY_MAX_DISTANCE_KM and time_gap <= timedelta(hours=JOURNEY_MAX_LOCATION_WINDOW_HOURS):
+                return True
+            if distance > JOURNEY_MAX_DISTANCE_KM * 2 and time_gap > timedelta(hours=4):
+                return False
+
+        if time_gap <= timedelta(hours=JOURNEY_MAX_FALLBACK_WINDOW_HOURS):
+            return True
+
+        if time_gap <= timedelta(hours=36) and asset_theme == group_theme:
+            return True
+
+        return False
+
+    if asset_location and group_centroid:
+        return haversine_distance_km(asset_location, group_centroid) <= JOURNEY_MAX_DISTANCE_KM
+
+    return asset_theme == group_theme
+
+
+def cluster_assets_into_journeys(assets: List[Dict], manual_name: str = "") -> List[List[Dict]]:
+    ordered_assets = sort_assets_for_story(assets)
+
+    if manual_name:
+        return [ordered_assets]
+
+    groups = []
+    current_group = []
+
+    for asset in ordered_assets:
+        if not current_group or should_join_journey_group(asset, current_group):
+            current_group.append(asset)
+            continue
+
+        groups.append(current_group)
+        current_group = [asset]
+
+    if current_group:
+        groups.append(current_group)
+
+    return groups
+
+
+def format_journey_window(assets: List[Dict]) -> str:
+    dates = []
+
+    for asset in assets:
+        captured_dt = get_asset_capture_datetime(asset)
+        if captured_dt:
+            dates.append(captured_dt)
+
+    if not dates:
+        return "待整理"
+
+    start_at = min(dates)
+    end_at = max(dates)
+
+    if start_at.date() == end_at.date():
+        return start_at.strftime("%Y-%m-%d")
+
+    return f"{start_at.strftime('%Y-%m-%d')} ~ {end_at.strftime('%Y-%m-%d')}"
+
+
+def build_journey_label(file_name: str, captured_at: Optional[str], manual_name: str = "", journey_theme: str = "轻旅行") -> str:
+    manual_name = manual_name.strip()
+    if manual_name:
+        return manual_name
+
+    captured_dt = coerce_datetime(captured_at) or guess_capture_datetime(file_name, captured_at)
+
+    if captured_dt:
+        return f"11去哪玩 | {captured_dt.strftime('%m/%d')} {journey_theme}"
+
+    return f"11去哪玩 | {journey_theme}"
+
+
+def build_journey_group_key(file_name: str, captured_at: Optional[str], manual_name: str = "") -> str:
+    manual_name = manual_name.strip()
+    if manual_name:
+        return f"manual::{manual_name}"
+
+    captured_dt = guess_capture_datetime(file_name, captured_at)
+    theme = infer_journey_theme(file_name)
+    date_key = captured_dt.strftime("%Y-%m-%d") if captured_dt else datetime.now().strftime("%Y-%m-%d")
+    return f"{date_key}::{theme}"
+
+
+def build_story_roles(total: int, index: int) -> Dict:
+    if index == 0:
+        return {"role": "封面总览", "story_purpose": "第一张先交代目的地和整体氛围，方便读者一眼看懂这趟旅程。"}
+    if index == total - 1:
+        return {"role": "收尾记忆", "story_purpose": "最后一张放返程、夜景或情绪收束图，让笔记有完整的结束感。"}
+    if index == 1:
+        return {"role": "旅程开场", "story_purpose": "第二张交代到达后的第一感受，正文可以自然切到路线和玩法。"}
+    if total > 3 and index == total - 2:
+        return {"role": "细节补充", "story_purpose": "倒数第二张适合放局部细节，增强这段旅程的真实感和收藏价值。"}
+    return {"role": "路线展开", "story_purpose": "中间段图片负责展开路线、玩法和氛围，让节奏更顺。"}
+
+
+def build_xiaohongshu_gallery(post: PhotoPost) -> List[Dict]:
+    gallery = sort_assets_for_story(post.gallery)
+    items = []
+
+    for index, asset in enumerate(gallery):
+        story_role = build_story_roles(len(gallery), index)
+        captured_dt = get_asset_capture_datetime(asset)
+        image_payload = asset.get("image_base64", "")
+        image_url = f"data:image/jpeg;base64,{image_payload}" if image_payload else (f"data:image/jpeg;base64,{post.image_base64}" if index == 0 and post.image_base64 else "")
+        items.append({
+            "index": index + 1,
+            "image": image_url,
+            "file_name": asset.get("file_name", ""),
+            "captured_at": captured_dt.strftime("%m-%d %H:%M") if captured_dt else "时间未知",
+            "location": asset.get("location_label") or post.journey_location,
+            "role": story_role["role"],
+            "story_purpose": story_role["story_purpose"],
+            "is_cover": index == 0,
+        })
+
+    return items
+
+
+def build_generated_image_sequence(xhs_payload: Dict, gallery: List[Dict]) -> List[Dict]:
+    generated_sequence = xhs_payload.get("image_sequence")
+
+    if isinstance(generated_sequence, list) and generated_sequence:
+        normalized = []
+        for index, item in enumerate(generated_sequence[:len(gallery)]):
+            if isinstance(item, dict):
+                normalized.append({
+                    "position": item.get("position", index + 1),
+                    "role": item.get("role", gallery[index]["role"]),
+                    "photo_hint": item.get("photo_hint", gallery[index]["file_name"]),
+                    "story_purpose": item.get("story_purpose", gallery[index]["story_purpose"]),
+                })
+        if normalized:
+            return normalized
+
+    return [
+        {
+            "position": item["index"],
+            "role": item["role"],
+            "photo_hint": item["file_name"],
+            "story_purpose": item["story_purpose"],
+        }
+        for item in gallery
+    ]
+
+
+def build_journey_context(post: PhotoPost) -> Dict:
+    gallery = sort_assets_for_story(post.gallery)
+    return {
+        "brand_name": "11去哪玩",
+        "journey_label": post.journey_label,
+        "journey_theme": post.journey_theme,
+        "journey_location": post.journey_location,
+        "journey_window": post.journey_window,
+        "photo_count": post.photo_count,
+        "photo_names": [asset.get("file_name", "") for asset in gallery[:8]],
+        "gallery_summary": [
+            {
+                "index": index + 1,
+                "file_name": asset.get("file_name", ""),
+                "captured_at": (get_asset_capture_datetime(asset) or datetime.now()).strftime("%Y-%m-%d %H:%M") if get_asset_capture_datetime(asset) else "时间未知",
+                "location": asset.get("location_label") or post.journey_location,
+            }
+            for index, asset in enumerate(gallery[:8])
+        ],
+        "content_angle": post.vision_analysis.get("content_angle", "旅程玩法整理"),
+    }
+
+
+def make_post_id(prefix: str = "journey") -> str:
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
+
+
+def build_post_from_assets(assets: List[Dict], source: str, manual_name: str = "") -> PhotoPost:
+    ordered_assets = sort_assets_for_story(assets)
+    cover = ordered_assets[0]
+    journey_theme = dominant_journey_theme(ordered_assets)
+    journey_label = build_journey_label(cover["file_name"], cover.get("captured_at"), manual_name, journey_theme)
+    journey_location = summarize_journey_location(ordered_assets)
+    created_at = datetime.now().isoformat()
+
+    return PhotoPost(
+        id=make_post_id(),
+        file_name=cover["file_name"],
+        drive_id=cover.get("drive_id", ""),
+        local_path=cover.get("local_path"),
+        image_base64=cover["image_base64"],
+        vision_analysis={
+            "source": source,
+            "journey_label": journey_label,
+            "journey_theme": journey_theme,
+            "captured_at": cover.get("captured_at"),
+            "journey_location": journey_location,
+        },
+        generated_content={},
+        platform_previews={},
+        status="pending",
+        tone_key=state.config.default_tone,
+        platforms=state.config.default_platforms.copy(),
+        source=source,
+        journey_label=journey_label,
+        journey_theme=journey_theme,
+        journey_location=journey_location,
+        journey_window=format_journey_window(ordered_assets),
+        photo_count=len(ordered_assets),
+        gallery=[
+            {
+                "file_name": asset["file_name"],
+                "captured_at": asset.get("captured_at"),
+                "captured_at_source": asset.get("captured_at_source", ""),
+                "local_path": asset.get("local_path"),
+                "drive_id": asset.get("drive_id", ""),
+                "image_base64": asset.get("image_base64", ""),
+                "location": asset.get("location"),
+                "location_label": asset.get("location_label", ""),
+            }
+            for asset in ordered_assets
+        ],
+        scheduled_at=None,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+def save_local_export(name: str, content: str) -> str:
+    ensure_local_workspace()
+    export_path = LOCAL_EXPORT_DIR / name
+    export_path.write_text(content, encoding="utf-8")
+    return str(export_path)
+
+
+def create_local_asset(file_storage) -> Dict:
+    original_name = file_storage.filename or f"photo-{uuid4().hex[:8]}.jpg"
+    if not is_supported_photo(original_name):
+        raise ValueError(f"Unsupported file type: {original_name}")
+
+    content = file_storage.read()
+    if not content:
+        raise ValueError(f"Empty file: {original_name}")
+
+    local_path = build_local_asset_path(original_name)
+    local_path.write_bytes(content)
+    metadata = extract_photo_metadata(content, original_name)
+
+    return {
+        "file_name": original_name,
+        "drive_id": "",
+        "local_path": str(local_path),
+        "image_base64": base64.b64encode(content).decode("utf-8"),
+        "captured_at": metadata["captured_at"],
+        "captured_at_source": metadata["captured_at_source"],
+        "location": metadata["location"],
+        "location_label": metadata["location_label"],
+        "theme_hint": infer_journey_theme(original_name, metadata["location_label"]),
+    }
 
 
 # ==================== Watcher ====================
@@ -190,7 +767,8 @@ def watch_drive_folder():
                 folder_processed = state.folder_ids.get("processed")
             
             photos = list_photos_in_folder(service, folder_selected)
-            
+            discovered_assets = []
+
             for photo in photos:
                 pid = photo["id"]
                 with state_lock:
@@ -201,35 +779,42 @@ def watch_drive_folder():
                 print(f"New photo: {photo['name']}")
                 img_data = download_photo(service, pid)
                 img_b64 = base64.b64encode(img_data).decode("utf-8")
-                
-                post = PhotoPost(
-                    id=f"post_{datetime.now().strftime('%Y%m%d%H%M%S')}_{pid[:8]}",
-                    file_name=photo["name"],
-                    drive_id=pid,
-                    local_path=None,
-                    image_base64=img_b64,
-                    vision_analysis={},
-                    generated_content={},
-                    platform_previews={},
-                    status="pending",
-                    tone_key=state.config.default_tone,
-                    platforms=state.config.default_platforms.copy(),
-                    scheduled_at=None,
-                    created_at=datetime.now().isoformat(),
-                    updated_at=datetime.now().isoformat()
-                )
-                
+
+                metadata = extract_photo_metadata(img_data, photo["name"], photo.get("modifiedTime"))
+                discovered_assets.append({
+                    "file_name": photo["name"],
+                    "drive_id": pid,
+                    "local_path": None,
+                    "image_base64": img_b64,
+                    "captured_at": metadata["captured_at"],
+                    "captured_at_source": metadata["captured_at_source"],
+                    "location": metadata["location"],
+                    "location_label": metadata["location_label"],
+                    "theme_hint": infer_journey_theme(photo["name"], metadata["location_label"]),
+                })
+
+            if discovered_assets:
+                grouped_assets = cluster_assets_into_journeys(discovered_assets)
+
                 with state_lock:
-                    state.photos_queue.append(post)
+                    for assets in grouped_assets:
+                        post = build_post_from_assets(assets, source="google-drive")
+                        state.photos_queue.append(post)
+                        socketio.emit('new_photo_detected', {
+                            'photo_id': post.id,
+                            'file_name': post.file_name,
+                            'journey_label': post.journey_label,
+                            'journey_location': post.journey_location,
+                            'photo_count': post.photo_count,
+                            'thumbnail': f"data:image/jpeg;base64,{post.image_base64}"
+                        })
+
                     queue_size = len(state.photos_queue)
                     processed_count = len(state.processed_posts)
                     scheduled_count = len(state.scheduled_posts)
-                socketio.emit('new_photo_detected', {
-                    'photo_id': post.id,
-                    'file_name': post.file_name,
-                    'thumbnail': f"data:image/jpeg;base64,{img_b64}"
-                })
-                move_file(service, pid, folder_processed, folder_selected)
+
+                for asset in discovered_assets:
+                    move_file(service, asset["drive_id"], folder_processed, folder_selected)
             
             last_check = datetime.now().isoformat()
             with state_lock:
@@ -249,21 +834,25 @@ def watch_drive_folder():
 # ==================== Preview Builders ====================
 
 def build_xiaohongshu_preview(post: PhotoPost, content: Dict) -> Dict:
-    xhs = content.get("xiaohongshu", {})
+    xhs = content.get("platforms", {}).get("xiaohongshu", content.get("xiaohongshu", {}))
+    gallery = build_xiaohongshu_gallery(post)
     return {
-        "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
+        "cover_image": gallery[0]["image"] if gallery else (f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None),
         "title": xhs.get("title_options", [""])[0] if xhs.get("title_options") else "",
         "body": xhs.get("body", ""),
         "hashtags": xhs.get("hashtags", []),
         "likes": "1.2k", "saves": "856", "comments": "128",
         "author": {"name": "Your Name", "avatar": None, "followers": "5.2k"},
-        "location": "📍 发现美好", "post_time": "刚刚",
+        "location": f"📍 {post.journey_location or post.journey_label.replace('11去哪玩 | ', '')}", "post_time": post.journey_window,
         "music": xhs.get("music_suggestion", "🎵 原声"),
+        "gallery": gallery,
+        "image_sequence": build_generated_image_sequence(xhs, gallery),
+        "cover_tip": xhs.get("cover_tip", ""),
     }
 
 
 def build_instagram_preview(post: PhotoPost, content: Dict) -> Dict:
-    ig = content.get("instagram", {})
+    ig = content.get("platforms", {}).get("instagram", content.get("instagram", {}))
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
         "username": "your.handle",
@@ -279,7 +868,7 @@ def build_instagram_preview(post: PhotoPost, content: Dict) -> Dict:
 
 
 def build_linkedin_preview(post: PhotoPost, content: Dict) -> Dict:
-    li = content.get("linkedin", {})
+    li = content.get("platforms", {}).get("linkedin", content.get("linkedin", {}))
     return {
         "cover_image": f"data:image/jpeg;base64,{post.image_base64}" if post.image_base64 else None,
         "author_name": "Your Name",
@@ -331,6 +920,12 @@ def api_status():
                 "default_platforms": state.config.default_platforms,
                 "has_api_key": bool(state.config.active_api_key)
             },
+            "mvp": {
+                "brand": "11去哪玩",
+                "drive_ready": has_drive_token(),
+                "local_upload_ready": True,
+                "export_destination": "drive" if has_drive_token() else "local"
+            },
             "tones": {k: v["name"] for k, v in XIAOHONGSHU_TONES.items()},
             "platforms": {k: {"name": v["name"], "icon": v["icon"]} for k, v in PLATFORM_CONFIGS.items()},
             "scheduling": SCHEDULING_CONFIG,
@@ -371,6 +966,54 @@ def api_posts():
     return jsonify(out)
 
 
+@app.route('/api/local-photos', methods=['POST'])
+def api_local_photos():
+    uploaded_files = request.files.getlist('photos')
+    manual_name = (request.form.get('journey_name') or '').strip()
+
+    if not uploaded_files:
+        return jsonify({"error": "No photos uploaded"}), 400
+
+    try:
+        imported_assets = []
+        for uploaded_file in uploaded_files:
+            if not uploaded_file or not uploaded_file.filename:
+                continue
+
+            asset = create_local_asset(uploaded_file)
+            imported_assets.append(asset)
+
+        if not imported_assets:
+            return jsonify({"error": "No valid photos uploaded"}), 400
+
+        grouped_assets = cluster_assets_into_journeys(imported_assets, manual_name)
+
+        created_posts = []
+        with state_lock:
+            for assets in grouped_assets:
+                post = build_post_from_assets(assets, source="local-upload", manual_name=manual_name)
+                state.photos_queue.append(post)
+                created_posts.append(asdict(post))
+
+            queue_size = len(state.photos_queue)
+
+        socketio.emit('status_update', {
+            'last_check': datetime.now().isoformat(),
+            'queue_size': queue_size,
+            'processed_count': len(state.processed_posts),
+            'scheduled_count': len(state.scheduled_posts)
+        })
+
+        return jsonify({
+            "success": True,
+            "journeys_created": len(created_posts),
+            "photos_imported": sum(len(assets) for assets in grouped_assets),
+            "posts": created_posts,
+        })
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
     data = request.json
@@ -407,20 +1050,31 @@ def api_generate():
     
     try:
         import tempfile
-        ext = os.path.splitext(post.file_name)[1] or ".jpg"
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            tmp.write(base64.b64decode(post.image_base64))
-            tmp_path = tmp.name
+        tmp_path = None
+        source_image_path = post.local_path if post.local_path and os.path.exists(post.local_path) else ''
+
+        if source_image_path:
+            generation_image_path = source_image_path
+        else:
+            ext = os.path.splitext(post.file_name)[1] or ".jpg"
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(decode_image_payload(post.image_base64))
+                tmp_path = tmp.name
+            generation_image_path = tmp_path
+
+        journey_context = build_journey_context(post)
         
         content = generate_multi_platform_content(
-            image_path=tmp_path,
+            image_path=generation_image_path,
             platforms=platforms,
             tone_key=tone_key,
             custom_instructions=custom,
-            config=state.config
+            config=state.config,
+            journey_context=journey_context,
         )
-        
-        os.unlink(tmp_path)
+
+        if tmp_path:
+            os.unlink(tmp_path)
         
         post.generated_content = content
         post.vision_analysis = {
@@ -428,16 +1082,20 @@ def api_generate():
             "mood": content.get("mood", ""),
             "colors": content.get("dominant_colors", []),
             "tone": tone_key,
-            "content_angle": content.get("content_angle", "")
+            "content_angle": content.get("content_angle", ""),
+            "journey_label": post.journey_label,
+            "journey_theme": post.journey_theme,
+            "journey_location": post.journey_location,
+            "photo_count": post.photo_count,
         }
         post.platform_previews = build_previews(post)
         post.status = "ready"
         post.updated_at = datetime.now().isoformat()
         
         with state_lock:
-            with state_lock:
-                if post in state.photos_queue:
-                    state.photos_queue.remove(post)
+            if post in state.photos_queue:
+                state.photos_queue.remove(post)
+            if post not in state.processed_posts:
                 state.processed_posts.append(post)
         
         return jsonify({
@@ -486,7 +1144,8 @@ def api_batch_generate():
                 image_path=tmp_path,
                 platforms=platforms,
                 tone_key=tone_key,
-                config=state.config
+                config=state.config,
+                journey_context=build_journey_context(post)
             )
             os.unlink(tmp_path)
             
@@ -495,7 +1154,10 @@ def api_batch_generate():
                 "scene": content.get("scene_description", ""),
                 "mood": content.get("mood", ""),
                 "colors": content.get("dominant_colors", []),
-                "tone": tone_key
+                "tone": tone_key,
+                "journey_label": post.journey_label,
+                "journey_theme": post.journey_theme,
+                "journey_location": post.journey_location,
             }
             post.platform_previews = build_previews(post)
             post.status = "ready"
@@ -530,6 +1192,8 @@ def api_schedule():
                 if post not in state.scheduled_posts:
                     state.scheduled_posts.append(post)
                 return jsonify({"success": True, "scheduled_at": scheduled_at})
+
+    return jsonify({"error": "Post not found"}), 404
     
 
 
@@ -590,19 +1254,22 @@ def api_export(post_id):
     
     post = target_post
     try:
-        service = get_drive_service()
-        if not state.folder_ids:
-            ensure_folder_structure(service)
-
         preview = post.platform_previews.get(platform, {})
-        folder_key = f"{platform}_posts"
 
         if platform == "xiaohongshu":
+            image_sequence = preview.get('image_sequence', [])
+            sequence_block = "\n".join([
+                f"{item.get('position', index + 1)}. {item.get('role', '')} - {item.get('story_purpose', '')}"
+                for index, item in enumerate(image_sequence)
+            ])
             content = f"""# {preview.get('title', '')}
 
 {preview.get('body', '')}
 
 {' '.join(preview.get('hashtags', []))}
+
+图序建议:
+{sequence_block or '1. 封面总览 - 先用最能代表旅程的一张图开场'}
 
 ---
 Music: {preview.get('music', '')}
@@ -632,10 +1299,20 @@ Takeaway: {preview.get('takeaway', '')}
 
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         name = f"{platform}_{ts}_{post.file_name}.md"
-        fid = upload_text(service, state.folder_ids[folder_key], name, content)
 
+        if has_drive_token():
+            service = get_drive_service()
+            if not state.folder_ids:
+                ensure_folder_structure(service)
+
+            folder_key = f"{platform}_posts"
+            fid = upload_text(service, state.folder_ids[folder_key], name, content)
+            post.status = "published"
+            return jsonify({"success": True, "drive_file_id": fid, "file_name": name, "destination": "drive"})
+
+        export_path = save_local_export(name, content)
         post.status = "published"
-        return jsonify({"success": True, "drive_file_id": fid, "file_name": name})
+        return jsonify({"success": True, "file_name": name, "destination": "local", "local_path": export_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -645,6 +1322,11 @@ def api_takeout_sync():
     """Sync photos from Google Photos Takeout ZIP files in Drive."""
     data = request.json or {}
     target = data.get('target', 'draft')  # draft or selected
+
+    if not has_drive_token():
+        return jsonify({
+            "error": "Google OAuth token is not configured. Use local photo upload for the MVP, or add ~/.hermes/google_token.json to enable Drive sync."
+        }), 400
     
     try:
         service = get_drive_service()
@@ -747,6 +1429,13 @@ def handle_connect():
 
 @socketio.on('start_watching')
 def handle_start_watching():
+    if not has_drive_token():
+        emit('status', {
+            'is_watching': False,
+            'error': 'Google OAuth token not found. Use local upload mode for the MVP.'
+        })
+        return
+
     with state_lock:
         already = state.is_watching
         state.is_watching = True
@@ -764,11 +1453,13 @@ def handle_stop_watching():
 # ==================== Main ====================
 
 if __name__ == '__main__':
+    ensure_local_workspace()
     print("=" * 60)
     print("Multi-Platform Photo Content Pipeline")
     print("=" * 60)
     print(f"Open: http://localhost:5000")
     print(f"Provider: {state.config.llm_provider}")
     print(f"API Key: {'Yes' if state.config.active_api_key else 'No'}")
+    print(f"Drive OAuth: {'Yes' if has_drive_token() else 'No'}")
     print("=" * 60)
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)

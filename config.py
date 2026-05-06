@@ -1,4 +1,4 @@
-"""Configuration for the Multi-Platform Photo Pipeline."""
+"""Configuration for the 11去哪玩 photo-to-content MVP."""
 
 import os
 from dataclasses import dataclass
@@ -34,7 +34,7 @@ class PipelineConfig:
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", self.anthropic_api_key)
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", self.gemini_api_key)
         if self.default_platforms is None:
-            self.default_platforms = ["xiaohongshu", "instagram"]
+            self.default_platforms = ["xiaohongshu"]
     
     @property
     def active_api_key(self) -> Optional[str]:

@@ -1,212 +1,113 @@
-# 小红书 Photo Content Pipeline 🚀
+# 11去哪玩 MVP
 
-An AI-powered content generation pipeline that automatically creates Xiaohongshu (小红书) style posts from your Google Drive photos.
+这个仓库现在落地的是一个可本地跑通的 MVP：把照片导入进来，按旅程线索自动归类，并生成待发送的小红书图文草稿。Google Drive / Google Photos Takeout 保留为可选增强，默认推荐先走本地上传模式把流程跑通。
 
-![Screenshot Placeholder]
+## 当前能力
 
-## Features
+- 本地上传照片，自动按文件名中的日期和主题词归类为旅程
+- 生成 `11去哪玩` 风格的小红书草稿，并提供手机预览
+- 无 API key 时使用内置旅行模板，保证 MVP 可演示
+- 无 Google token 时自动降级到本地模式，不阻塞主流程
+- 导出草稿到本地 `data/exports/`；配置好 Google OAuth 后可导出到 Drive
 
-✨ **Automatic Photo Detection** - Watches your Google Drive "selected" folder  
-🤖 **AI-Powered Content Generation** - Uses Claude/GPT-4o/Gemini vision APIs  
-📱 **Real-time Preview** - See exactly how your post will look on Xiaohongshu  
-✏️ **Interactive Editor** - Fine-tune titles, captions, and hashtags  
-💾 **Export to Drive** - Save generated content back to Google Drive  
-🎨 **Multiple Writing Styles** - Warm friend, trendy sister, lifestyle blogger, luxury minimal
+## 已验证的本地闭环
 
-## Quick Start
+在当前 Linux 环境中，以下链路已经验证通过：
 
-### 1. Install & Run
+1. 启动 Flask 服务
+2. 本地上传图片到 `/api/local-photos`
+3. 自动生成旅程标签，如 `11去哪玩 | 04/01 城市漫游`
+4. 调用 `/api/generate` 生成小红书文案
+5. 调用 `/api/export/<id>` 导出到 `data/exports/`
+
+## 快速启动
+
+### 1. 启动服务
 
 ```bash
-cd "/Users/walterwan90/Documents/Photo processor/xiaohongshu_pipeline"
+cd /home/meetwk0916/projects/11s-photo-gallery
 chmod +x run.sh
-./run.sh
+./run.sh foreground
 ```
 
-Or manually:
+默认打开：`http://localhost:5000`
+
+### 2. 如果系统没有 `python3-venv`
+
+这台 Debian/Ubuntu 机器常见的阻塞是 `python3 -m venv` 无法使用。推荐二选一：
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python3 app.py
+# 方案 A：有 sudo 时
+sudo apt install python3.12-venv
 ```
 
-Open http://localhost:5000 in your browser.
+```bash
+# 方案 B：无 sudo 时，用用户目录 bootstrap virtualenv
+curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+python3 /tmp/get-pip.py --user --break-system-packages
+~/.local/bin/pip install --user --break-system-packages virtualenv
+```
 
-### 2. Configure AI Provider
+完成后重新执行 `./run.sh foreground`。
 
-In the web UI or via environment variable:
+### 3. 使用本地 MVP
+
+1. 打开页面
+2. 点击 `上传本地照片`
+3. 可选填写旅程名称，例如 `清明杭州两日游`
+4. 选择一张旅程卡片
+5. 点击 `生成内容`
+6. 在右侧预览和编辑后点击 `导出到本地`
+
+导出的 Markdown 位于 `data/exports/`。
+
+## 可选增强
+
+### AI Provider
+
+配置任意一个即可启用真实多模态生成：
 
 ```bash
-# Option 1: Anthropic Claude (recommended)
 export ANTHROPIC_API_KEY="sk-..."
-
-# Option 2: OpenAI GPT-4o
+# 或
 export OPENAI_API_KEY="sk-..."
-
-# Option 3: Google Gemini
+# 或
 export GEMINI_API_KEY="..."
 ```
 
-### 3. Add Photos to Drive
+### Google Drive / Google Photos Takeout
 
-1. Open Google Drive
-2. Navigate to `Photo Content/Photos-to-Process/`
-3. Upload your photos to `draft/` or directly to `selected/`
-4. Click "开始监控" in the web UI
-5. Photos in `selected/` will be automatically detected
+如果你已经配置过 Google OAuth，并且本地存在：
 
-### 4. Generate Content
-
-1. Select a photo from the queue
-2. Choose a writing style (温暖闺蜜, 潮流辣妹, etc.)
-3. Click "生成小红书内容"
-4. Watch the real-time preview on the phone mockup
-5. Edit as needed, then copy or save to Drive
-
-## Folder Structure (Auto-Created in Drive)
-
-```
-Photo Content/
-├── Photos-to-Process/
-│   ├── draft/              # Drop new photos here
-│   ├── selected/           # Pipeline watches this folder
-│   └── processed/          # Processed photos moved here
-├── Content-Output/
-│   └── xiaohongshu-posts/  # Generated .md files
-└── content-manifest.json   # Tracking file
+```bash
+~/.hermes/google_token.json
 ```
 
-## Writing Styles
+那么可以使用：
 
-| Style | Description | Best For |
-|-------|-------------|----------|
-| 温暖闺蜜 (warm_friend) | Casual, friendly, uses "姐妹" | Daily life, food, lifestyle |
-| 潮流辣妹 (trendy_sister) | Bold, confident, trendy | Fashion, OOTD, nightlife |
-| 生活博主 (lifestyle_blogger) | Refined, aesthetic, tips | Travel, home, wellness |
-| 高级简约 (luxury_minimal) | Minimal, elegant, English | Art, design, luxury products |
+- Drive watcher
+- Drive 导出
+- Takeout ZIP 同步
 
-## Architecture
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│ Google Drive │────▶│  Pipeline    │────▶│   AI Vision │
-│  (photos)   │     │  (watcher)   │     │   (Claude/  │
-└─────────────┘     └──────────────┘     │   GPT/Gemini)│
-                                                │
-                       ┌─────────────────────────┘
-                       ▼
-               ┌──────────────┐
-               │  Web UI      │
-               │  (Vue.js +   │
-               │   Flask)     │
-               └──────────────┘
-                       │
-                       ▼
-               ┌──────────────┐
-               │  Xiaohongshu │
-               │  Preview     │
-               └──────────────┘
-```
-
-## API Endpoints
+## 关键接口
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/status` | GET | Get pipeline status |
-| `/api/posts` | GET | List all photos/posts |
-| `/api/config` | POST | Update configuration |
-| `/api/generate` | POST | Generate content for a photo |
-| `/api/preview/<id>` | GET | Get preview data |
-| `/api/update-content` | POST | Edit generated content |
-| `/api/export/<id>` | POST | Save to Drive |
+| `/api/status` | GET | 查看当前是本地 MVP 还是 Drive 模式 |
+| `/api/local-photos` | POST | 上传本地照片并自动归类旅程 |
+| `/api/posts` | GET | 获取当前旅程队列 |
+| `/api/generate` | POST | 为旅程生成小红书等平台内容 |
+| `/api/update-content` | POST | 编辑草稿 |
+| `/api/export/<id>` | POST | 导出到本地或 Drive |
 
-## Environment Variables
+## 当前已知设计取舍
 
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Claude API key |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `DRIVE_ROOT_FOLDER` | Root folder name (default: "Photo Content") |
-| `CHECK_INTERVAL` | Seconds between Drive checks (default: 30) |
+- 旅程归类目前基于文件名中的日期和关键词，是启发式规则，不是 EXIF/地理信息级别的精确聚类
+- 无 AI key 时使用模板回退，保证演示流畅，但内容质量不如真实视觉模型
+- Google Photos 仍然是可选增强，不再是默认必需依赖
 
-## Troubleshooting
+## 下一步建议
 
-### "No API key detected"
-- Add API key in the web UI Config panel, or
-- Set environment variable before running
-
-### "Token not found"
-- Make sure you've completed Google OAuth setup
-- Check that `~/.hermes/google_token.json` exists
-
-### Photos not appearing
-- Verify photos are in `selected/` folder, not `draft/`
-- Check that the Drive folder structure was created
-- Click "开始监控" to start the watcher
-
-### Content generation fails
-- Verify your API key is valid and has credit
-- Check the Python console for error details
-- Try a different AI provider
-
-## Customization
-
-### Add New Writing Styles
-
-Edit `config.py` and add to `XIAOHONGSHU_TONES`:
-
-```python
-"foodie_guru": {
-    "name": "美食探店",
-    "style_description": "热情推荐，突出食物细节和口感",
-    "opening_phrases": ["吃货们看过来！", "这家店绝了！"],
-    ...
-}
-```
-
-### Modify Prompt Templates
-
-Edit `ai_generator.py` - function `build_xiaohongshu_prompt()`
-
-### Change Default Settings
-
-Edit `config.py` - class `PipelineConfig`
-
-## Development
-
-```bash
-# Run in debug mode
-FLASK_DEBUG=1 python3 app.py
-
-# Install dev dependencies
-pip install black flake8 pytest
-```
-
-## Roadmap
-
-- [ ] Batch processing multiple photos
-- [ ] Integration with Google Photos Picker API
-- [ ] Auto-scheduling for optimal posting times
-- [ ] Analytics dashboard for post performance
-- [ ] Multi-language support (English, Japanese, etc.)
-- [ ] Integration with XiaoHongshu API (if available)
-
-## License
-
-MIT License - Feel free to modify and distribute.
-
-## Credits
-
-Built with:
-- Flask + SocketIO
-- Vue.js 3
-- Google Drive API
-- Claude / GPT-4o / Gemini Vision
-- 小红书 (Xiaohongshu) for the UI inspiration
-
----
-
-Made with ❤️ for content creators who want to streamline their workflow.
+1. 增加 EXIF 解析，用拍摄时间和地理位置替代文件名启发式
+2. 支持一个旅程多图轮播预览，而不是只展示封面图
+3. 针对 `11去哪玩` 增加路线推荐、预算、交通、最佳出片时间等结构化字段

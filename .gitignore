@@ -9,7 +9,10 @@ __pycache__/
 dist/
 build/
 venv/
+.venv/
 .env
 .DS_Store
 *.log
+app.pid
+data/
 

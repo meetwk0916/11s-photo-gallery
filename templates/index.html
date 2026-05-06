@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Platform Photo Pipeline</title>
+    <title>11去哪玩 MVP</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
@@ -190,6 +190,31 @@
         .xhs-image-container { position: relative; background: #000; }
         .xhs-image { width: 100%; aspect-ratio: 3/4; object-fit: cover; }
         .xhs-image-indicator { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.5); color: white; padding: 3px 6px; border-radius: 10px; font-size: 10px; }
+        .xhs-gallery-strip {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); gap: 8px;
+            padding: 10px 14px; background: white; border-top: 1px solid #f0f0f0;
+        }
+        .xhs-gallery-item {
+            position: relative; border: 0; border-radius: 10px; overflow: hidden;
+            cursor: pointer; padding: 0; background: #f4f4f4;
+        }
+        .xhs-gallery-item.active { outline: 2px solid #ff2442; }
+        .xhs-gallery-item img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+        .xhs-gallery-index {
+            position: absolute; left: 4px; top: 4px; min-width: 18px; height: 18px;
+            display: grid; place-items: center; border-radius: 9px; background: rgba(0,0,0,0.68);
+            color: white; font-size: 10px;
+        }
+        .xhs-sequence-panel {
+            padding: 12px 14px; background: #fff8f5; border-top: 1px solid #f7ddd7;
+        }
+        .xhs-sequence-title { font-size: 12px; font-weight: 700; color: #5f2f1f; margin-bottom: 8px; }
+        .xhs-sequence-list { display: grid; gap: 8px; }
+        .xhs-sequence-item {
+            padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.92); border: 1px solid #f1d8d0;
+        }
+        .xhs-sequence-item strong { display: block; font-size: 12px; color: #392118; }
+        .xhs-sequence-item span { display: block; font-size: 11px; color: #79584d; margin-top: 4px; line-height: 1.5; }
         .xhs-content { padding: 14px; background: white; margin-bottom: 6px; }
         .xhs-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; line-height: 1.45; }
         .xhs-body { font-size: 13px; line-height: 1.75; color: #333; white-space: pre-wrap; }
@@ -242,8 +267,8 @@
     <div id="app">
         <div class="container">
             <header>
-                <h1>Multi-Platform Photo Pipeline</h1>
-                <p>小红书 + Instagram + LinkedIn — AI 自动生成，一键排版预览</p>
+                <h1>11去哪玩</h1>
+                <p>本地照片 / Google Drive 自动归类旅程，并生成待发送的小红书图文</p>
             </header>
             
             <!-- Status -->
@@ -252,13 +277,14 @@
                     <div class="status-dot" :class="{ watching: isWatching }"></div>
                     <span>{{ isWatching ? '监控中' : '已停止' }}</span>
                     <span v-if="lastCheck" style="color: #999; font-size: 11px;">上次: {{ formatTime(lastCheck) }}</span>
+                    <span style="color: #666; font-size: 11px;">{{ driveReady ? 'Drive 模式' : '本地 MVP 模式' }}</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 12px;">
                     <span style="color: #666; font-size: 12px;">
                         待处理 {{ queueSize }} | 已生成 {{ processedCount }} | 已排期 {{ scheduledCount }}
                     </span>
                     <button class="btn" :class="isWatching ? 'btn-secondary' : 'btn-primary'" @click="toggleWatching">
-                        {{ isWatching ? '停止' : '开始监控' }}
+                        {{ isWatching ? '停止监听 Drive' : '监听 Drive' }}
                     </button>
                 </div>
             </div>
@@ -291,6 +317,10 @@
                                 <label>API Key</label>
                                 <input type="password" v-model="config.api_key_input" placeholder="输入 API Key" @blur="saveApiKey">
                             </div>
+                            <div class="config-field">
+                                <label>旅程名（可选）</label>
+                                <input type="text" v-model="journeyNameInput" placeholder="例如：清明杭州两日游">
+                            </div>
                         </div>
                         <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
                             <span style="font-size: 12px; color: #666;">默认平台:</span>
@@ -305,11 +335,19 @@
                                     {{ info.icon }} {{ info.name }}
                                 </div>
                             </div>
+                            <button class="btn btn-small btn-primary" @click="openLocalUpload" :disabled="isUploadingLocal">
+                                {{ isUploadingLocal ? '上传中...' : '📁 上传本地照片' }}
+                            </button>
                             <button class="btn btn-small btn-secondary" @click="runTakeoutSync" :disabled="isSyncing">
-                                {{ isSyncing ? '同步中...' : '📦 Takeout 同步' }}
+                                {{ driveReady ? (isSyncing ? '同步中...' : '📦 Drive Takeout 同步') : 'Drive 未配置' }}
                             </button>
                         </div>
-                        <div v-if="config.has_api_key" style="margin-top: 8px; font-size: 11px; color: #00d26a;">✓ API Key 已配置</div>
+                        <input ref="localFileInput" type="file" accept="image/*" multiple style="display: none;" @change="handleLocalUpload">
+                        <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                            {{ driveReady ? '已连接 Google Drive，可监听 selected 文件夹。' : '当前优先走本地上传 MVP，无需 Google token 也能跑通。' }}
+                        </div>
+                        <div v-if="config.has_api_key" style="margin-top: 6px; font-size: 11px; color: #00d26a;">✓ API Key 已配置</div>
+                        <div v-else style="margin-top: 6px; font-size: 11px; color: #9a6a00;">未配置 API Key 时会使用内置旅行模板，适合先演示完整流程。</div>
                     </div>
                     
                     <!-- Photos -->
@@ -331,7 +369,7 @@
                         </div>
                         
                         <div v-if="photos.length === 0" class="empty-state">
-                            <p>暂无照片<br>将照片移动到 Drive 的 selected 文件夹</p>
+                            <p>暂无旅程素材<br>上传本地照片，或连接 Google Drive 后监听 selected 文件夹</p>
                         </div>
                         
                         <div class="photo-grid" v-else>
@@ -351,7 +389,10 @@
                                     v-if="photo.status === 'pending'"
                                 >
                                 <img :src="photo.image_base64.startsWith('data:') ? photo.image_base64 : 'data:image/jpeg;base64,' + photo.image_base64">
-                                <div class="photo-overlay">{{ photo.file_name }}</div>
+                                <div class="photo-overlay">
+                                    <div>{{ photo.journey_label || photo.file_name }}</div>
+                                    <div style="opacity: 0.82; margin-top: 2px;">{{ photo.photo_count || 1 }} 张 · {{ photo.journey_location || photo.file_name }}</div>
+                                </div>
                                 <div class="photo-status" :class="photo.status">
                                     {{ statusText(photo.status) }}
                                 </div>
@@ -375,6 +416,7 @@
                         </div>
                         
                         <div v-if="selectedPhoto.status === 'pending'">
+                            <p style="font-size: 12px; color: #666; margin-bottom: 10px;">当前旅程：{{ selectedPhoto.journey_label || selectedPhoto.file_name }}</p>
                             <p style="font-size: 12px; color: #666; margin-bottom: 10px;">选择平台与风格后生成：</p>
                             <div class="platform-chips" style="margin-bottom: 10px;">
                                 <div 
@@ -387,6 +429,7 @@
                                     {{ name }}
                                 </div>
                             </div>
+                            <p style="font-size: 11px; color: #8a6b00; margin-bottom: 10px;" v-if="!config.has_api_key">未配置 API Key，当前会使用内置旅行草稿模板。</p>
                             <button class="btn btn-primary" @click="generateContent" :disabled="isGenerating || selectedPlatforms.length === 0">
                                 {{ isGenerating ? '生成中...' : '🚀 生成内容' }}
                             </button>
@@ -431,7 +474,7 @@
                         <div class="action-bar">
                             <button class="btn btn-primary" @click="regenerateContent">🔄 重新生成</button>
                             <button class="btn btn-secondary" @click="copyContent">📋 复制</button>
-                            <button class="btn btn-secondary" @click="exportToDrive(activePlatform)">💾 保存 {{ availablePlatforms[activePlatform]?.name }}</button>
+                            <button class="btn btn-secondary" @click="exportToDrive(activePlatform)">{{ exportDestination === 'drive' ? '💾 保存到 Drive' : '💾 导出到本地' }}</button>
                         </div>
                         
                         <!-- Scheduling -->
@@ -483,8 +526,20 @@
                                         <button class="xhs-follow-btn">关注</button>
                                     </div>
                                     <div class="xhs-image-container">
-                                        <img :src="currentPreview.xiaohongshu.cover_image" class="xhs-image" v-if="currentPreview.xiaohongshu.cover_image">
-                                        <div class="xhs-image-indicator">1/1</div>
+                                        <img :src="currentXhsGalleryItem ? currentXhsGalleryItem.image : currentPreview.xiaohongshu.cover_image" class="xhs-image" v-if="currentXhsGalleryItem || currentPreview.xiaohongshu.cover_image">
+                                        <div class="xhs-image-indicator">{{ currentXhsGalleryItem ? currentXhsGalleryItem.index : 1 }}/{{ currentPreview.xiaohongshu.gallery?.length || 1 }}</div>
+                                    </div>
+                                    <div class="xhs-gallery-strip" v-if="currentPreview.xiaohongshu.gallery && currentPreview.xiaohongshu.gallery.length > 1">
+                                        <button
+                                            v-for="(image, index) in currentPreview.xiaohongshu.gallery"
+                                            :key="`${image.file_name}-${index}`"
+                                            class="xhs-gallery-item"
+                                            :class="{ active: activeGalleryIndex === index }"
+                                            @click="activeGalleryIndex = index"
+                                        >
+                                            <img :src="image.image" :alt="image.file_name">
+                                            <div class="xhs-gallery-index">{{ image.index }}</div>
+                                        </button>
                                     </div>
                                     <div class="xhs-actions">
                                         <div class="xhs-action">
@@ -507,6 +562,15 @@
                                         <div class="xhs-title">{{ currentPreview.xiaohongshu.title }}</div>
                                         <div class="xhs-body">{{ currentPreview.xiaohongshu.body }}</div>
                                         <div class="xhs-hashtags">{{ currentPreview.xiaohongshu.hashtags.join(' ') }}</div>
+                                    </div>
+                                    <div class="xhs-sequence-panel" v-if="currentPreview.xiaohongshu.image_sequence?.length">
+                                        <div class="xhs-sequence-title">图序建议</div>
+                                        <div class="xhs-sequence-list">
+                                            <div class="xhs-sequence-item" v-for="item in currentPreview.xiaohongshu.image_sequence" :key="`${item.position}-${item.role}`">
+                                                <strong>{{ item.position }}. {{ item.role }}</strong>
+                                                <span>{{ item.story_purpose }}</span>
+                                            </div>
+                                        </div>
                                     </div>
                                     <div class="xhs-music-bar">
                                         <svg class="xhs-music-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
@@ -617,11 +681,17 @@
                 const isGenerating = ref(false);
                 const isBatching = ref(false);
                 const isSyncing = ref(false);
+                const isUploadingLocal = ref(false);
                 const toastMessage = ref('');
                 const availableTones = ref({});
                 const availablePlatforms = ref({});
                 const suggestedSlots = ref([]);
                 const selectedSlot = ref(null);
+                const driveReady = ref(false);
+                const exportDestination = ref('local');
+                const journeyNameInput = ref('');
+                const localFileInput = ref(null);
+                const activeGalleryIndex = ref(0);
                 
                 const config = reactive({
                     provider: 'anthropic',
@@ -641,6 +711,13 @@
                     if (!selectedPhoto.value) return null;
                     return selectedPhoto.value.platform_previews || null;
                 });
+
+                const currentXhsGalleryItem = computed(() => {
+                    const gallery = currentPreview.value?.xiaohongshu?.gallery || [];
+                    if (!gallery.length) return null;
+                    const safeIndex = Math.min(activeGalleryIndex.value, gallery.length - 1);
+                    return gallery[safeIndex];
+                });
                 
                 const allPendingSelected = computed(() => {
                     const pending = photos.value.filter(p => p.status === 'pending');
@@ -650,7 +727,10 @@
                 onMounted(() => {
                     socket = io();
                     socket.on('connect', () => console.log('Connected'));
-                    socket.on('status', (data) => { isWatching.value = data.is_watching; });
+                    socket.on('status', (data) => {
+                        isWatching.value = data.is_watching;
+                        if (data.error) showToast(data.error);
+                    });
                     socket.on('status_update', (data) => {
                         lastCheck.value = data.last_check;
                         queueSize.value = data.queue_size;
@@ -660,7 +740,10 @@
                     socket.on('new_photo_detected', (data) => {
                         photos.value.push({
                             id: data.photo_id, file_name: data.file_name,
-                            image_base64: data.thumbnail, status: 'pending'
+                            image_base64: data.thumbnail, status: 'pending',
+                            journey_label: data.journey_label || data.file_name,
+                            journey_location: data.journey_location || '',
+                            photo_count: data.photo_count || 1,
                         });
                         queueSize.value++;
                         showToast('新照片: ' + data.file_name);
@@ -693,6 +776,10 @@
                             selectedPlatforms.value = [...config.default_platforms];
                             selectedTone.value = data.config.default_tone;
                         }
+                        if (data.mvp) {
+                            driveReady.value = Boolean(data.mvp.drive_ready);
+                            exportDestination.value = data.mvp.export_destination || 'local';
+                        }
                         if (data.tones) availableTones.value = data.tones;
                         if (data.platforms) availablePlatforms.value = data.platforms;
                     } catch (e) { console.error(e); }
@@ -710,8 +797,54 @@
                 };
                 
                 const toggleWatching = () => {
+                    if (!driveReady.value) {
+                        showToast('Google OAuth 未配置，请使用本地上传模式');
+                        return;
+                    }
                     if (isWatching.value) socket.emit('stop_watching');
                     else socket.emit('start_watching');
+                };
+
+                const openLocalUpload = () => {
+                    localFileInput.value?.click();
+                };
+
+                const handleLocalUpload = async (event) => {
+                    const files = Array.from(event.target.files || []);
+                    if (!files.length) return;
+
+                    isUploadingLocal.value = true;
+
+                    try {
+                        const formData = new FormData();
+                        files.forEach((file) => formData.append('photos', file));
+                        if (journeyNameInput.value.trim()) {
+                            formData.append('journey_name', journeyNameInput.value.trim());
+                        }
+
+                        const res = await fetch('/api/local-photos', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await res.json();
+
+                        if (data.success) {
+                            await fetchPosts();
+                            const nextPhoto = photos.value.find((photo) => photo.id === data.posts?.[0]?.id);
+                            if (nextPhoto) {
+                                await selectPhoto(nextPhoto);
+                            }
+                            journeyNameInput.value = '';
+                            showToast(`已导入 ${data.photos_imported} 张照片，生成 ${data.journeys_created} 个旅程`);
+                        } else {
+                            showToast(data.error || '导入失败');
+                        }
+                    } catch (e) {
+                        showToast('导入失败: ' + e.message);
+                    } finally {
+                        isUploadingLocal.value = false;
+                        if (event.target) event.target.value = '';
+                    }
                 };
                 
                 const togglePlatform = (key) => {
@@ -739,6 +872,7 @@
                     selectedPhoto.value = photo;
                     activePlatform.value = photo.platforms?.[0] || 'xiaohongshu';
                     selectedSlot.value = null;
+                    activeGalleryIndex.value = 0;
                     
                     if (photo.platform_previews) {
                         const preview = photo.platform_previews[activePlatform.value];
@@ -785,9 +919,6 @@
                 
                 const generateContent = async () => {
                     if (!selectedPhoto.value) return;
-                    if (!config.has_api_key && !config.api_key_input) {
-                        showToast('请先配置 API Key'); return;
-                    }
                     isGenerating.value = true;
                     try {
                         const res = await fetch('/api/generate', {
@@ -889,8 +1020,11 @@
                             body: JSON.stringify({ platform })
                         });
                         const data = await res.json();
-                        if (data.success) showToast('已保存到 Drive');
-                        else showToast('保存失败');
+                        if (data.success) {
+                            showToast(data.destination === 'drive' ? '已保存到 Drive' : '已导出到本地 data/exports');
+                        } else {
+                            showToast(data.error || '保存失败');
+                        }
                     } catch (e) { showToast('保存失败'); }
                 };
                 
@@ -920,6 +1054,11 @@
                 };
                 
                 const runTakeoutSync = async () => {
+                    if (!driveReady.value) {
+                        showToast('Google OAuth 未配置，请直接上传本地照片');
+                        return;
+                    }
+
                     isSyncing.value = true;
                     try {
                         const res = await fetch('/api/takeout-sync', {
@@ -990,10 +1129,13 @@
                 return {
                     isWatching, lastCheck, queueSize, processedCount, scheduledCount,
                     photos, selectedPhoto, selectedPhotoIds, activePlatform,
-                    selectedPlatforms, selectedTone, isGenerating, isBatching, isSyncing,
+                    selectedPlatforms, selectedTone, isGenerating, isBatching, isSyncing, isUploadingLocal,
                     toastMessage, availableTones, availablePlatforms, suggestedSlots, selectedSlot,
-                    config, editableContent, currentPreview, allPendingSelected,
+                    config, editableContent, currentPreview, currentXhsGalleryItem, allPendingSelected, driveReady, exportDestination,
+                    journeyNameInput, localFileInput,
+                    activeGalleryIndex,
                     toggleWatching, togglePlatform, toggleDefaultPlatform,
+                    openLocalUpload, handleLocalUpload,
                     selectPhoto, generateContent, batchGenerate, selectAllPending,
                     updatePreview, regenerateContent, copyContent, exportToDrive,
                     schedulePost, selectSlot, runTakeoutSync, updateConfig, saveApiKey,
